@@ -631,16 +631,16 @@ function AddTripForm({ onClose, onSave, initialData }) {
         <div className="p-6">
           <form id="add-trip-form" onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Trip Name</label>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Trip Name <span className="text-red-500">*</span></label>
               <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. Summer in Tokyo" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Start Date</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Start Date <span className="text-red-500">*</span></label>
                 <input type="date" required value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
               </div>
               <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">End Date</label>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">End Date <span className="text-red-500">*</span></label>
                 <input type="date" required min={formData.startDate} value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
               </div>
             </div>
@@ -1059,7 +1059,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
               {category !== 'transport' && (
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                    {category === 'accommodation' ? 'Accommodation Name' : 'Activity Title'}
+                    {category === 'accommodation' ? 'Accommodation Name' : 'Activity Title'} <span className="text-red-500">*</span>
                   </label>
                   <input type="text" name="title" required value={formData.title} onChange={handleChange} placeholder={category === 'accommodation' ? "e.g. Le Meurice..." : "e.g. Louvre Museum..."} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                 </div>
@@ -1067,12 +1067,12 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
 
               {category === 'accommodation' && (
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2 text-xs font-bold text-slate-500 uppercase tracking-wider -mb-2 mt-2">City & Country</div>
+                  <div className="col-span-2 text-xs font-bold text-slate-500 uppercase tracking-wider -mb-2 mt-2">City <span className="text-red-500">*</span> & Country <span className="text-red-500">*</span></div>
                   <div>
-                    <input type="text" name="city" value={formData.city} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    <input type="text" name="city" required value={formData.city} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                   <div>
-                    <input type="text" name="country" value={formData.country} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    <input type="text" name="country" required value={formData.country} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                 </div>
               )}
@@ -1090,7 +1090,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-                    <div className="col-span-2 text-xs font-bold text-blue-800 uppercase tracking-wider mb-1">Departure Location</div>
+                    <div className="col-span-2 text-xs font-bold text-blue-800 uppercase tracking-wider mb-1">Departure Location <span className="text-red-500">*</span></div>
                     <div>
                       <input type="text" name="depCity" required value={formData.depCity} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                     </div>
@@ -1099,7 +1099,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
-                    <div className="col-span-2 text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">Arrival Location</div>
+                    <div className="col-span-2 text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">Arrival Location <span className="text-red-500">*</span></div>
                     <div>
                       <input type="text" name="arrCity" required value={formData.arrCity} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                     </div>
@@ -1113,7 +1113,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
               <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
                 <div className="col-span-2">
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                     {category === 'transport' ? 'Departure Time' : (category === 'accommodation' ? 'Check-in' : 'Start')}
+                     {category === 'transport' ? 'Departure Time' : (category === 'accommodation' ? 'Check-in' : 'Start')} <span className="text-red-500">*</span>
                   </span>
                 </div>
                 <div>
@@ -1125,7 +1125,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
 
                 <div className="col-span-2 mt-2 border-t border-slate-200 pt-3">
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                     {category === 'transport' ? 'Arrival Time (Optional)' : (category === 'accommodation' ? 'Check-out' : 'End (Optional)')}
+                     {category === 'transport' ? 'Arrival Time (Optional)' : (category === 'accommodation' ? <>Check-out <span className="text-red-500">*</span></> : 'End (Optional)')}
                   </span>
                 </div>
                 <div>
