@@ -9,18 +9,16 @@ import {
   getFirestore, collection, doc, setDoc, updateDoc, deleteDoc, 
   onSnapshot, getDoc, enableIndexedDbPersistence
 } from 'firebase/firestore';
-import { getStorage, ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
   Calendar as CalendarIcon, List, Wallet, Plus, Plane, Bed, MapPin, 
   Train, Car, Bus, Ship, Navigation, Building, Home, Users, Trash2, 
   X, ChevronLeft, ChevronRight, Clock, Globe2, CalendarDays, ExternalLink, 
-  Link as LinkIcon, Share2, UserPlus, AlertCircle, Edit2, LogOut, ChevronDown, ChevronUp,
-  CheckSquare, Paperclip, Printer
+  Link as LinkIcon, Share2, UserPlus, AlertCircle, Edit2, LogOut, CheckSquare, 
+  Printer, Lightbulb, Utensils, Wine, Landmark, Ticket,
+  Paperclip, UploadCloud, Loader2
 } from 'lucide-react';
 
-// ============================================================================
-// ⚠️ FIREBASE CONFIGURATION
-// ============================================================================
 const firebaseConfig = {
   apiKey: "AIzaSyC_rlEwDTift8WgQnLuaGjOgbejgXTQm1E",
   authDomain: "my-travel-app-cffa9.firebaseapp.com",
@@ -38,14 +36,14 @@ try {
   db = getFirestore(app);
   storage = getStorage(app);
   
+  // Enable offline mode
   enableIndexedDbPersistence(db).catch((err) => {
-    console.warn("Offline persistence error:", err.code);
+    console.warn("Offline persistence notice:", err.code);
   });
 } catch (e) {
   console.error("Firebase init error:", e);
 }
 
-// Your requested App ID for Firestore collections
 const appId = 'rakan-awesome-travel-app'; 
 
 const formatDate = (dateStr) => {
@@ -53,48 +51,22 @@ const formatDate = (dateStr) => {
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
 };
-
 const formatShortDate = (dateStr) => {
   if (!dateStr) return '';
   const date = new Date(dateStr);
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 };
-
 const formatCurrency = (amount, currency) => {
   return new Intl.NumberFormat('en-US', { style: 'currency', currency: currency }).format(amount);
 };
-
 const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
 const getFirstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
-
-const getLocationAtStartOfDay = (date, tripItems) => {
-  if (!tripItems || tripItems.length === 0) return 'Origin';
-  
-  // Find all transport items that arrive BEFORE the current selected date
-  const pastTransports = tripItems.filter(i => 
-    i.category === 'transport' && 
-    i.arrivalLocation && 
-    (i.endDate || i.date) < date
-  ).sort((a, b) => {
-    const endA = a.endDate || a.date;
-    const endB = b.endDate || b.date;
-    if (endA !== endB) return endA.localeCompare(endB);
-    return (a.endTime || a.time || '00:00').localeCompare(b.endTime || b.time || '00:00');
-  });
-
-  if (pastTransports.length > 0) {
-    return pastTransports[pastTransports.length - 1].arrivalLocation;
-  }
-
-  // Fallback: Check the departure location of the very first transport of the trip
-  const firstTransport = [...tripItems].sort((a,b) => a.date.localeCompare(b.date)).find(i => i.category === 'transport' && i.location);
-  return firstTransport ? firstTransport.location : 'Unknown Location';
-};
 
 const CATEGORIES = {
   transport: { label: 'Transport', color: 'text-blue-600', bg: 'bg-blue-100', border: 'border-blue-200' },
   accommodation: { label: 'Accommodation', color: 'text-indigo-600', bg: 'bg-indigo-100', border: 'border-indigo-200' },
-  activity: { label: 'Activity', color: 'text-emerald-600', bg: 'bg-emerald-100', border: 'border-emerald-200' }
+  activity: { label: 'Activity', color: 'text-emerald-600', bg: 'bg-emerald-100', border: 'border-emerald-200' },
+  recommendation: { label: 'Ideas', color: 'text-amber-600', bg: 'bg-amber-100', border: 'border-amber-200' }
 };
 
 const SUB_TYPES = {
@@ -113,14 +85,22 @@ const SUB_TYPES = {
     other: { icon: Bed, label: 'Other Accommodation' }
   },
   activity: {
-    tour: { icon: MapPin, label: 'Tour / Sightseeing' },
-    dining: { icon: MapPin, label: 'Dining' },
-    event: { icon: CalendarIcon, label: 'Event / Show' },
-    other: { icon: MapPin, label: 'Other Activity' }
+    tour: { icon: MapPin, label: 'Tour' },
+    dining: { icon: Utensils, label: 'Dining' },
+    event: { icon: Ticket, label: 'Event / Show' },
+    other: { icon: CalendarIcon, label: 'Other Activity' }
+  },
+  recommendation: {
+    place: { icon: MapPin, label: 'Place to Visit' },
+    eatery: { icon: Utensils, label: 'Eateries' },
+    bar: { icon: Wine, label: 'Bars/Clubs' },
+    museum: { icon: Landmark, label: 'Museums' },
+    activity: { icon: Ticket, label: 'Activities' },
+    other: { icon: Lightbulb, label: 'Other Ideas' }
   }
 };
 
-const currencies = ['AUD', 'USD', 'EUR', 'GBP', 'CAD', 'JPY']; // AUD defaults first
+const currencies = ['AUD', 'USD', 'EUR', 'GBP', 'CAD', 'JPY']; 
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -139,7 +119,7 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
 
-  // Authentication Effect
+  // Auth Listener
   useEffect(() => {
     if (!auth) {
       setIsAuthLoading(false);
@@ -152,7 +132,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Database Snapshot Effect
+  // Fetch Trips
   useEffect(() => {
     if (!user || !db) return;
     const tripsRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips');
@@ -166,7 +146,100 @@ export default function App() {
 
   const activeTrip = trips.find(t => t.id === activeTripId);
 
-  const startLocation = useMemo(() => getLocationAtStartOfDay(selectedDate, activeTrip?.items || []), [selectedDate, activeTrip]);
+  // Bulletproof filter for chronological sorting
+  const itemsForSelectedDate = useMemo(() => {
+    if (!activeTrip || !selectedDate) return [];
+    return activeTrip.items
+      .filter(item => {
+        if (item.category === 'recommendation') return false; 
+        
+        const start = item.date;
+        const end = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
+        
+        return selectedDate >= start && selectedDate <= end;
+      })
+      .sort((a, b) => {
+        const getSortTime = (item, date) => {
+           const start = item.date;
+           const end = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
+           if (start === date) return item.time || '00:00';
+           if (end === date && start !== end) return item.endTime || '23:59';
+           return '00:00'; // Carry-overs pin to the top of the day
+        };
+        
+        const timeA = getSortTime(a, selectedDate);
+        const timeB = getSortTime(b, selectedDate);
+        if (timeA !== timeB) return timeA.localeCompare(timeB);
+        return a.category.localeCompare(b.category);
+      });
+  }, [activeTrip, selectedDate]);
+
+  // Determine current cities to show relevant Ideas across days
+  const currentCities = useMemo(() => {
+    if (!activeTrip || !selectedDate) return [];
+    let cities = new Set();
+    
+    // 1. Accommodations spanning over this date
+    activeTrip.items.forEach(i => {
+      if (i.category === 'accommodation' && i.city) {
+        const start = i.date;
+        const end = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+        if (selectedDate >= start && selectedDate <= end) {
+          cities.add(i.city.trim().toLowerCase());
+        }
+      }
+    });
+
+    // 2. Activities on this date
+    activeTrip.items.forEach(i => {
+      if (i.category === 'activity' && i.city && i.date === selectedDate) {
+        cities.add(i.city.trim().toLowerCase());
+      }
+    });
+
+    // 3. Transport arriving before or on this date
+    const pastTransports = activeTrip.items
+      .filter(i => i.category === 'transport' && i.arrCity)
+      .filter(i => {
+         const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+         return d <= selectedDate;
+      })
+      .sort((a,b) => {
+        const aDate = (a.endDate && a.endDate.trim() !== '') ? a.endDate : a.date;
+        const bDate = (b.endDate && b.endDate.trim() !== '') ? b.endDate : b.date;
+        return aDate.localeCompare(bDate);
+      });
+    
+    if (pastTransports.length > 0) {
+      cities.add(pastTransports[pastTransports.length - 1].arrCity.trim().toLowerCase());
+    }
+
+    // 4. Transport departing on this date
+    activeTrip.items.forEach(i => {
+      if (i.category === 'transport' && i.depCity && i.date === selectedDate) {
+        cities.add(i.depCity.trim().toLowerCase());
+      }
+    });
+
+    return Array.from(cities);
+  }, [activeTrip, selectedDate]);
+
+  // Filter recommendations based on current cities
+  const recommendationsForToday = useMemo(() => {
+    if (!activeTrip) return [];
+    const ideas = activeTrip.items.filter(i => i.category === 'recommendation');
+    
+    if (currentCities.length === 0) {
+      return ideas; // Fallback: Show all ideas safely if we don't know where the user is
+    }
+
+    return ideas.filter(idea => {
+      if (!idea.city) return true;
+      const ideaCity = idea.city.trim().toLowerCase();
+      // Loose matching allows "Tokyo" to match "Tokyo, Japan"
+      return currentCities.some(cc => cc.includes(ideaCity) || ideaCity.includes(cc));
+    });
+  }, [activeTrip, currentCities]);
 
   const budgetSummary = useMemo(() => {
     if (!activeTrip) return {};
@@ -182,35 +255,6 @@ export default function App() {
     return summary;
   }, [activeTrip]);
 
-  const getSortTime = (item, date) => {
-    if (item.date === date) return item.time || '00:00';
-    if (item.endDate === date) return item.endTime || '00:00';
-    return '00:00'; // Carry-overs pin to the top of the day
-  };
-
-  const itemsForSelectedDate = useMemo(() => {
-    if (!activeTrip || !selectedDate) return [];
-    
-    return activeTrip.items
-      .filter(item => {
-        // If it spans multiple days, include it if the selected date falls within the range
-        if (item.endDate && item.endDate !== item.date) {
-          return selectedDate >= item.date && selectedDate <= item.endDate;
-        }
-        return item.date === selectedDate;
-      })
-      .sort((a, b) => {
-        const timeA = getSortTime(a, selectedDate);
-        const timeB = getSortTime(b, selectedDate);
-        
-        // Primary sort by chronological time on that specific day
-        if (timeA !== timeB) return timeA.localeCompare(timeB);
-        
-        // Secondary sort: keep categories grouped if times are identical (e.g. 00:00 carry-overs)
-        return a.category.localeCompare(b.category);
-      });
-  }, [activeTrip, selectedDate]);
-
   const handleSaveTrip = async (tripData) => {
     if (!user) return;
     try {
@@ -219,7 +263,7 @@ export default function App() {
         await updateDoc(tripRef, { name: tripData.name, startDate: tripData.startDate, endDate: tripData.endDate });
         setEditingTrip(null);
       } else {
-        const trip = { ...tripData, ownerId: user.uid, sharedWith: [], items: [] };
+        const trip = { ...tripData, ownerId: user.uid, sharedWith: [], items: [], checklist: [] };
         await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'trips')), trip);
       }
       setIsAddTripModalOpen(false);
@@ -250,9 +294,8 @@ export default function App() {
         if (data.ownerId === user.uid || data.sharedWith.includes(user.uid)) return { success: true, message: "You already have access to this trip." };
         await updateDoc(tripRef, { sharedWith: [...data.sharedWith, user.uid] });
         return { success: true, message: "Successfully joined trip!" };
-      } else {
-        return { success: false, message: "Trip not found. Check the ID." };
       }
+      return { success: false, message: "Trip not found. Check the ID." };
     } catch (e) { return { success: false, message: "Error joining trip." }; }
   };
 
@@ -263,19 +306,21 @@ export default function App() {
       newItems = activeTrip.items.map(i => i.id === editingItem.id ? { ...itemData, id: editingItem.id } : i);
       setEditingItem(null);
     } else {
-      newItems = [...activeTrip.items, { ...itemData, id: Date.now().toString() }];
+      newItems = [...activeTrip.items, { ...itemData, id: Date.now().toString(), isCompleted: false }];
     }
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId), { items: newItems });
     setIsAddModalOpen(false);
-    setSelectedDate(itemData.date);
-    setActiveTab('day');
+    if (itemData.date && itemData.category !== 'recommendation') {
+      setSelectedDate(itemData.date);
+      setActiveTab('day');
+    }
   };
 
   const requestDeleteItem = (itemId) => {
     setConfirmModal({
       isOpen: true,
       title: "Delete Item?",
-      message: "Are you sure you want to remove this item from your itinerary?",
+      message: "Are you sure you want to remove this item?",
       onConfirm: async () => {
         const newItems = activeTrip.items.filter(item => item.id !== itemId);
         await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId), { items: newItems });
@@ -284,95 +329,9 @@ export default function App() {
     });
   };
 
-  const handleExportPDF = () => {
-    if (!activeTrip) return;
-    const printWindow = window.open('', '_blank');
-    if (!printWindow) return; 
-
-    let html = `
-      <html>
-        <head>
-          <title>${activeTrip.name} - Itinerary</title>
-          <style>
-            body { font-family: system-ui, -apple-system, sans-serif; padding: 40px; color: #1e293b; }
-            h1 { border-bottom: 2px solid #e2e8f0; padding-bottom: 10px; color: #0f172a; margin-bottom: 5px; }
-            .day-block { margin-top: 30px; page-break-inside: avoid; }
-            .day-title { background: #f1f5f9; padding: 10px 15px; border-radius: 8px; margin-bottom: 15px; font-weight: bold; font-size: 1.2em; }
-            .item-row { display: flex; padding: 12px 0; border-bottom: 1px solid #f1f5f9; }
-            .item-time { width: 90px; font-weight: bold; color: #475569; }
-            .item-details { flex: 1; }
-            .item-title { font-weight: bold; font-size: 1.1em; margin-bottom: 4px; color: #0f172a; }
-            .item-meta { font-size: 0.9em; color: #64748b; margin-top: 2px; }
-          </style>
-        </head>
-        <body>
-          <h1>${activeTrip.name}</h1>
-          <p style="color: #64748b; margin-top: 0;"><strong>Dates:</strong> ${formatDate(activeTrip.startDate)} - ${formatDate(activeTrip.endDate)}</p>
-    `;
-
-    const itemsByDate = {};
-    activeTrip.items.forEach(item => {
-      let current = new Date(item.date);
-      const end = new Date(item.endDate || item.date);
-      while (current <= end) {
-        const dStr = current.toISOString().split('T')[0];
-        if(!itemsByDate[dStr]) itemsByDate[dStr] = [];
-        
-        let displayTime = item.time;
-        if (item.category === 'accommodation') {
-          if (dStr === item.date && dStr === item.endDate) displayTime = item.time + ' (In/Out)';
-          else if (dStr === item.date) displayTime = item.time + ' (In)';
-          else if (dStr === item.endDate) displayTime = (item.endTime || '11:00') + ' (Out)';
-          else displayTime = 'All Day';
-        } else if (item.category === 'transport') {
-          if (dStr === item.date) displayTime = item.time;
-          else if (dStr === item.endDate) displayTime = item.endTime || item.time;
-          else displayTime = 'All Day';
-        }
-        itemsByDate[dStr].push({ ...item, displayTime });
-        current.setUTCDate(current.getUTCDate() + 1);
-      }
-    });
-
-    Object.keys(itemsByDate).sort().forEach(dateStr => {
-      html += `<div class="day-block"><div class="day-title">${formatDate(dateStr)}</div>`;
-      itemsByDate[dateStr].sort((a,b) => {
-        const timeA = a.date === dateStr ? a.time : (a.endDate === dateStr ? (a.endTime || '00:00') : '00:00');
-        const timeB = b.date === dateStr ? b.time : (b.endDate === dateStr ? (b.endTime || '00:00') : '00:00');
-        return timeA.localeCompare(timeB);
-      }).forEach(item => {
-        html += `
-          <div class="item-row">
-            <div class="item-time">${item.displayTime}</div>
-            <div class="item-details">
-              <div class="item-title">${item.title}</div>
-              <div class="item-meta">${item.category.toUpperCase()} ${item.location ? `• ${item.location}` : ''}</div>
-              ${item.notes ? `<div class="item-meta" style="margin-top:6px;">${item.notes}</div>` : ''}
-            </div>
-          </div>
-        `;
-      });
-      html += `</div>`;
-    });
-
-    html += `</body></html>`;
-    printWindow.document.write(html);
-    printWindow.document.close();
-    printWindow.focus();
-    setTimeout(() => printWindow.print(), 250); 
-  };
-
-  const requestDeleteChecklistItem = (itemId) => {
-    setConfirmModal({
-      isOpen: true,
-      title: "Delete Checklist Item?",
-      message: "Remove this from your packing list?",
-      onConfirm: async () => {
-        const newChecklist = (activeTrip.checklist || []).filter(i => i.id !== itemId);
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId), { checklist: newChecklist });
-        setConfirmModal({ isOpen: false });
-      }
-    });
+  const handleToggleIdea = async (itemId, currentStatus) => {
+    const newItems = activeTrip.items.map(item => item.id === itemId ? { ...item, isCompleted: !currentStatus } : item);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', activeTripId), { items: newItems });
   };
 
   if (isAuthLoading) return <div className="min-h-screen bg-slate-50 flex items-center justify-center text-slate-500 font-medium">Loading your travels...</div>;
@@ -416,7 +375,7 @@ export default function App() {
                 </div>
               </div>
               <div className="flex items-center gap-1">
-                <button onClick={handleExportPDF} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors text-slate-300 hover:text-white" title="Print/Export PDF">
+                <button onClick={() => window.print()} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors text-white" title="Print/Export Itinerary">
                   <Printer size={16} />
                 </button>
                 <button onClick={() => { setEditingTrip(activeTrip); setIsAddTripModalOpen(true); }} className="p-2 bg-slate-800 hover:bg-slate-700 rounded-full transition-colors text-white" title="Edit Trip">
@@ -431,7 +390,7 @@ export default function App() {
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto pb-24 relative">
+        <div className="flex-1 overflow-y-auto pb-24 relative print:overflow-visible print:pb-0">
           {!activeTrip && (
             <div className="p-6 space-y-4 animate-in fade-in duration-300">
               {trips.length === 0 ? (
@@ -470,15 +429,17 @@ export default function App() {
                 <DayView 
                   date={selectedDate} 
                   items={itemsForSelectedDate} 
-                  startLocation={startLocation}
+                  currentCities={currentCities}
+                  recommendations={recommendationsForToday}
                   onDelete={requestDeleteItem}
+                  onToggleIdea={handleToggleIdea}
                   onEdit={(item) => { setEditingItem(item); setIsAddModalOpen(true); }}
                   tripStart={activeTrip.startDate}
                   tripEnd={activeTrip.endDate}
                   onDateChange={setSelectedDate}
                 />
               )}
-              {activeTab === 'checklist' && <ChecklistView trip={activeTrip} db={db} appId={appId} onDelete={requestDeleteChecklistItem} />}
+              {activeTab === 'checklist' && <ChecklistView trip={activeTrip} db={db} appId={appId} />}
               {activeTab === 'budget' && <BudgetView summary={budgetSummary} items={activeTrip.items} />}
             </>
           )}
@@ -487,14 +448,14 @@ export default function App() {
         {/* Floating Action Button */}
         <button 
           onClick={() => { if(activeTrip) { setEditingItem(null); setIsAddModalOpen(true); } else { setEditingTrip(null); setIsAddTripModalOpen(true); } }}
-          className="absolute bottom-24 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all z-20"
+          className="absolute bottom-24 right-6 bg-blue-600 text-white p-4 rounded-full shadow-lg hover:bg-blue-700 hover:scale-105 active:scale-95 transition-all z-20 print:hidden"
         >
           <Plus size={24} />
         </button>
 
         {/* Bottom Navigation */}
         {activeTrip && (
-          <div className="absolute bottom-0 w-full bg-white border-t border-slate-200 px-6 py-4 flex justify-between items-center z-20 pb-safe animate-in slide-in-from-bottom-8">
+          <div className="absolute bottom-0 w-full bg-white border-t border-slate-200 px-6 py-4 flex justify-between items-center z-20 pb-safe animate-in slide-in-from-bottom-8 print:hidden">
             <NavButton icon={CalendarIcon} label="Calendar" isActive={activeTab === 'calendar'} onClick={() => setActiveTab('calendar')} />
             <NavButton icon={List} label="Itinerary" isActive={activeTab === 'day'} onClick={() => setActiveTab('day')} />
             <NavButton icon={CheckSquare} label="Checklist" isActive={activeTab === 'checklist'} onClick={() => setActiveTab('checklist')} />
@@ -511,8 +472,6 @@ export default function App() {
             minDate={activeTrip.startDate}
             maxDate={activeTrip.endDate}
             initialData={editingItem}
-            tripId={activeTripId}
-            storage={storage}
           />
         )}
         {isAddTripModalOpen && (
@@ -526,7 +485,7 @@ export default function App() {
         {isJoinModalOpen && <JoinTripModal onClose={() => setIsJoinModalOpen(false)} onJoin={handleJoinTrip} />}
         
         {confirmModal.isOpen && (
-          <div className="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
+          <div className="fixed inset-0 z-[150] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
             <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden">
               <div className="p-6">
                 <h2 className="text-xl font-bold mb-2">{confirmModal.title}</h2>
@@ -567,7 +526,15 @@ function CalendarView({ trip, onSelectDate }) {
   }
 
   const itemsByDate = trip.items.reduce((acc, item) => {
-    acc[item.date] = (acc[item.date] || 0) + 1;
+    if(item.category !== 'recommendation' && item.date) {
+      let current = new Date(item.date);
+      const end = new Date((item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date);
+      while (current <= end) {
+        const dStr = current.toISOString().split('T')[0];
+        acc[dStr] = (acc[dStr] || 0) + 1;
+        current.setUTCDate(current.getUTCDate() + 1);
+      }
+    }
     return acc;
   }, {});
 
@@ -611,50 +578,7 @@ function CalendarView({ trip, onSelectDate }) {
   );
 }
 
-function AddTripForm({ onClose, onSave, initialData }) {
-  const [formData, setFormData] = useState(initialData || { name: '', startDate: '', endDate: '' });
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!formData.name || !formData.startDate || !formData.endDate) return;
-    if (formData.startDate > formData.endDate) { alert("End date cannot be before start date."); return; }
-    onSave(formData);
-  };
-
-  return (
-    <div className="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in">
-      <div className="bg-white w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-8">
-        <div className="flex justify-between items-center p-5 border-b border-slate-100">
-          <h2 className="text-xl font-bold">{initialData ? 'Edit Trip' : 'Plan a New Trip'}</h2>
-          <button onClick={onClose} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-600"><X size={20} /></button>
-        </div>
-        <div className="p-6">
-          <form id="add-trip-form" onSubmit={handleSubmit} className="space-y-5">
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Trip Name <span className="text-red-500">*</span></label>
-              <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. Summer in Tokyo" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Start Date <span className="text-red-500">*</span></label>
-                <input type="date" required value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">End Date <span className="text-red-500">*</span></label>
-                <input type="date" required min={formData.startDate} value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-              </div>
-            </div>
-          </form>
-        </div>
-        <div className="p-5 border-t border-slate-100 bg-white sm:rounded-b-3xl">
-          <button type="submit" form="add-trip-form" className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 transition-colors shadow-sm">{initialData ? 'Save Changes' : 'Create Trip'}</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DayView({ date, items, startLocation, arrivalLocations, onDelete, onEdit, tripStart, tripEnd, onDateChange }) {
+function DayView({ date, items, currentCities, recommendations, onDelete, onToggleIdea, onEdit, tripStart, tripEnd, onDateChange }) {
   const handlePrevDay = () => {
     const d = new Date(date);
     d.setUTCDate(d.getUTCDate() - 1);
@@ -671,10 +595,14 @@ function DayView({ date, items, startLocation, arrivalLocations, onDelete, onEdi
 
   const isFirstDay = date <= tripStart;
   const isLastDay = date >= tripEnd;
+  
+  const primaryCity = currentCities.length > 0 
+    ? currentCities[0].split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+    : '';
 
   return (
     <div className="animate-in slide-in-from-right-4 duration-300">
-      <div className="bg-white sticky top-0 z-10 border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm">
+      <div className="bg-white sticky top-0 z-10 border-b border-slate-200 px-4 py-3 flex items-center justify-between shadow-sm print:hidden">
         <button onClick={handlePrevDay} disabled={isFirstDay} className={`p-2 rounded-full ${isFirstDay ? 'text-slate-200' : 'text-slate-600 hover:bg-slate-100'}`}>
           <ChevronLeft size={20} />
         </button>
@@ -687,53 +615,54 @@ function DayView({ date, items, startLocation, arrivalLocations, onDelete, onEdi
       </div>
 
       <div className="p-4 sm:p-6 relative z-0">
-        
-        {/* The Timeline Line */}
-        <div className="absolute left-[40px] sm:left-[52px] top-6 bottom-0 w-0.5 bg-slate-200 -z-10"></div>
+        <div className="absolute left-[36px] top-6 bottom-0 w-0.5 bg-slate-200 -z-10"></div>
 
-        {/* Start Location Banner */}
-        <div className="flex items-center gap-3 mb-6 relative z-10 ml-[8px] sm:ml-[20px] animate-in fade-in zoom-in duration-500">
+        <div className="flex items-center gap-3 mb-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
            <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0">
               <MapPin size={14} />
            </div>
            <span className="font-black text-slate-800 uppercase tracking-widest text-sm bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-100">
-              {startLocation}
+              {primaryCity || 'Your Ideas'}
            </span>
         </div>
 
         {items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center pt-10 text-center text-slate-400">
+          <div className="flex flex-col items-center justify-center pt-16 text-center text-slate-400">
             <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-4"><CalendarIcon size={32} className="text-slate-300" /></div>
             <p className="font-medium text-slate-600">No plans yet for this day.</p>
           </div>
         ) : (
-          <div className="space-y-4">
-            {items.map((item) => {
-               const arrivesToday = item.category === 'transport' && item.arrivalLocation && (item.endDate || item.date) === date;
-               
-               return (
-                 <React.Fragment key={item.id}>
-                   <TripItemCard 
-                     item={item} 
-                     currentDate={date} 
-                     onEdit={onEdit} 
-                     onDelete={onDelete} 
-                   />
-                   
-                   {/* Mid-Day Arrival Marker */}
-                   {arrivesToday && (
-                      <div className="flex items-center gap-3 my-5 relative z-10 ml-[8px] sm:ml-[20px] animate-in slide-in-from-top-2">
-                         <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center border-[3px] border-white shadow-sm flex-shrink-0">
-                            <MapPin size={14} />
-                         </div>
-                         <span className="text-sm font-bold text-slate-700 bg-white px-3 py-1.5 rounded-lg border border-blue-100 shadow-sm text-blue-900">
-                           Arrived in {item.arrivalLocation}
-                         </span>
-                      </div>
-                   )}
-                 </React.Fragment>
-               );
-            })}
+          <div className="space-y-6">
+            <div className="absolute left-[36px] top-10 bottom-10 w-0.5 bg-slate-200 -z-10"></div>
+            {items.map((item) => (
+              <TripItemCard 
+                key={item.id} 
+                item={item} 
+                date={date} 
+                onEdit={onEdit} 
+                onDelete={onDelete} 
+              />
+            ))}
+          </div>
+        )}
+
+        {recommendations && recommendations.length > 0 && (
+          <div className="mt-10 pt-8 border-t-2 border-dashed border-slate-200">
+            <h3 className="font-black text-lg text-slate-800 mb-4 flex items-center gap-2">
+              <Lightbulb className="text-amber-500" /> 
+              {primaryCity ? `Things to do in ${primaryCity}` : 'Ideas for this trip'}
+            </h3>
+            <div className="space-y-3">
+              {recommendations.map(item => (
+                <RecommendationCard 
+                  key={item.id} 
+                  item={item} 
+                  onToggle={onToggleIdea} 
+                  onEdit={onEdit} 
+                  onDelete={onDelete} 
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -741,475 +670,231 @@ function DayView({ date, items, startLocation, arrivalLocations, onDelete, onEdi
   );
 }
 
-function TripItemCard({ item, currentDate, onEdit, onDelete }) {
-  const [isExpanded, setIsExpanded] = useState(false);
-
+function TripItemCard({ item, date, onEdit, onDelete }) {
+  const [isExpanded, setIsExpanded] = React.useState(false);
   const catConfig = CATEGORIES[item.category] || CATEGORIES.activity;
   const subConfig = SUB_TYPES[item.category]?.[item.subType] || SUB_TYPES.activity.other;
   const TypeIcon = subConfig.icon;
+  const mapUrl = item.location ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}` : null;
 
-  // Calculate span status
-  const isStart = item.date === currentDate;
-  const isEnd = item.endDate && item.endDate === currentDate;
-  const isMiddle = item.endDate && currentDate > item.date && currentDate < item.endDate;
+  const start = item.date;
+  const end = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
+  
+  const isMiddle = start !== end && date > start && date < end;
+  const isEnd = start !== end && date === end;
 
+  let displayTime = item.time;
   let statusLabel = '';
-  let displayTime = '';
-  let badgeColor = '';
-  let cardBg = '';
 
-  // Handle distinct Category stylings and Badges
   if (item.category === 'accommodation') {
-      cardBg = 'bg-indigo-50/70 hover:bg-indigo-50 border-indigo-100';
-      if (isStart && isEnd) { statusLabel = 'Check-in/out'; displayTime = item.time; badgeColor = 'bg-indigo-200 text-indigo-800'; }
-      else if (isStart) { statusLabel = 'Check-in'; displayTime = item.time; badgeColor = 'bg-indigo-200 text-indigo-800'; }
-      else if (isEnd) { statusLabel = 'Check-out'; displayTime = item.endTime || '11:00'; badgeColor = 'bg-amber-200 text-amber-800'; }
-      else { statusLabel = 'Staying'; displayTime = 'All Day'; badgeColor = 'bg-slate-200 text-slate-700'; }
+    if (isMiddle) { displayTime = 'All Day'; statusLabel = 'Staying'; }
+    else if (isEnd) { displayTime = item.endTime || '11:00'; statusLabel = 'Check-out'; }
+    else { statusLabel = 'Check-in'; }
   } else if (item.category === 'transport') {
-      cardBg = 'bg-blue-50/70 hover:bg-blue-50 border-blue-100';
-      if (isStart && isEnd) { statusLabel = 'Depart/Arrive'; displayTime = item.time; badgeColor = 'bg-blue-200 text-blue-800'; }
-      else if (isStart) { statusLabel = 'Departure'; displayTime = item.time; badgeColor = 'bg-blue-200 text-blue-800'; }
-      else if (isEnd) { statusLabel = 'Arrival'; displayTime = item.endTime || item.time; badgeColor = 'bg-emerald-200 text-emerald-800'; }
-      else { statusLabel = 'In Transit'; displayTime = 'All Day'; badgeColor = 'bg-slate-200 text-slate-700'; }
-  } else {
-      cardBg = 'bg-emerald-50/70 hover:bg-emerald-50 border-emerald-100';
-      if (isStart && isEnd) { statusLabel = 'Activity'; displayTime = item.time; badgeColor = 'bg-emerald-200 text-emerald-800'; }
-      else if (isStart) { statusLabel = 'Starts'; displayTime = item.time; badgeColor = 'bg-emerald-200 text-emerald-800'; }
-      else if (isEnd) { statusLabel = 'Ends'; displayTime = item.endTime || 'End of Day'; badgeColor = 'bg-slate-200 text-slate-700'; }
-      else { statusLabel = 'Ongoing'; displayTime = 'All Day'; badgeColor = 'bg-slate-200 text-slate-700'; }
+    if (isMiddle) { displayTime = 'In Transit'; statusLabel = 'In Transit'; }
+    else if (isEnd) { displayTime = item.endTime || item.time; statusLabel = 'Arrival'; }
+    else { statusLabel = 'Departure'; }
   }
 
   return (
-    <div className="flex gap-3 sm:gap-4 group cursor-pointer relative z-10" onClick={() => setIsExpanded(!isExpanded)}>
-      
-      {/* Left Timeline Side - Stacked Icon over Time */}
-      <div className="flex flex-col items-center min-w-[48px] sm:min-w-[56px] flex-shrink-0 pt-1">
-        <div className={`w-10 h-10 rounded-full flex items-center justify-center ${catConfig.bg} border-4 border-slate-100 shadow-sm relative z-10`}>
-          <TypeIcon size={18} className={catConfig.color} />
-        </div>
-        <span className={`text-[10px] sm:text-xs font-bold mt-1.5 text-center bg-white px-1.5 py-0.5 rounded-md border border-slate-200 shadow-sm tracking-wider ${isMiddle ? 'text-slate-400' : 'text-slate-600'}`}>
-          {displayTime}
-        </span>
+    <div className="flex gap-4 group cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
+      <div className="flex flex-col items-center relative z-10 w-12 flex-shrink-0">
+         <div className={`w-12 h-12 rounded-full flex items-center justify-center ${catConfig.bg} border-4 border-slate-50 shadow-sm mb-1`}>
+            <TypeIcon size={20} className={catConfig.color} />
+         </div>
+         <span className={`text-[10px] font-bold text-slate-500 text-center leading-tight bg-white px-1 py-0.5 rounded ${isMiddle ? 'opacity-50' : ''}`}>{displayTime}</span>
       </div>
       
-      {/* Right Card Side */}
-      <div className={`flex-1 border p-4 rounded-xl shadow-sm transition-all duration-200 ${cardBg} relative w-full overflow-hidden`}>
-        
-        {/* Top Header Row */}
-        <div className="flex justify-between items-start mb-1.5">
-          <div className="flex gap-2 items-center flex-wrap">
-            {statusLabel && (
-              <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${badgeColor}`}>
-                {statusLabel}
-              </span>
-            )}
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 opacity-80">
-              {subConfig.label}
-            </span>
-          </div>
-
-          {isExpanded && (
-            <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
-              <button onClick={() => onEdit(item)} className="p-1 text-slate-400 hover:text-blue-600 transition-colors bg-white rounded-md shadow-sm"><Edit2 size={14} /></button>
-              <button onClick={() => onDelete(item.id)} className="p-1 text-slate-400 hover:text-red-600 transition-colors bg-white rounded-md shadow-sm"><Trash2 size={14} /></button>
-            </div>
-          )}
-        </div>
-
-        {/* Title and Subtitle */}
-        <h3 className="font-bold text-lg leading-tight mb-0.5">{item.title}</h3>
-        {item.operator && (
-          <p className="text-sm font-semibold text-slate-600 mb-1">
-            {item.operator} {item.identifier && `• ${item.identifier}`}
-          </p>
-        )}
-
-        {/* COMPACT VIEW: Truncated Notes */}
-        {!isExpanded && item.notes && (
-          <p className="text-xs text-slate-500 line-clamp-1 mt-2">{item.notes}</p>
-        )}
-
-        {/* EXPANDED VIEW: Full Details */}
-        {isExpanded && (
-          <div className="mt-4 space-y-3 pt-3 border-t border-slate-200/50 animate-in fade-in duration-200">
-            
-            {/* Show explicit start/end spans if multi-day */}
-            {item.endDate && item.date !== item.endDate && (
-              <div className="text-xs text-slate-600 flex flex-col gap-1.5 bg-white/40 p-2 rounded-lg">
-                <div className="flex items-center gap-1.5"><Clock size={14} className="text-slate-400" /> <span className="font-semibold">Start:</span> {formatDate(item.date)} at {item.time}</div>
-                <div className="flex items-center gap-1.5"><Clock size={14} className="text-slate-400" /> <span className="font-semibold">End:</span> {formatDate(item.endDate)} at {item.endTime || '11:00'}</div>
-              </div>
-            )}
-
-            {/* Smart Location Rendering */}
-            {item.category === 'transport' ? (
-               <div className="flex flex-col gap-2 bg-white/50 p-3 rounded-lg text-sm border border-white/60">
-                  <div className="flex items-start gap-2 text-slate-700">
-                     <MapPin size={16} className="flex-shrink-0 mt-0.5 text-blue-500" />
-                     <div><span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Departure</span> {item.location || 'Not specified'}</div>
-                  </div>
-                  {item.arrivalLocation && (
-                     <div className="flex items-start gap-2 text-slate-700 mt-1 pt-2 border-t border-slate-200/50">
-                        <MapPin size={16} className="flex-shrink-0 mt-0.5 text-emerald-500" />
-                        <div><span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Arrival</span> {item.arrivalLocation}</div>
-                     </div>
-                  )}
-               </div>
-            ) : item.location ? (
-              <div className="mt-1">
-                <a href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(item.location)}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-start gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors group/link">
-                  <MapPin size={14} className="mt-0.5 flex-shrink-0 text-blue-400" />
-                  <span className="underline decoration-blue-200 group-hover/link:decoration-blue-400 underline-offset-2">{item.location}</span>
-                </a>
-              </div>
-            ) : null}
-
-            {/* URL Link */}
-            {item.url && (
-              <div className="mt-1">
-                <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 transition-colors">
-                  <LinkIcon size={14} className="text-slate-400" />
-                  <span className="truncate max-w-[200px] underline decoration-slate-200 underline-offset-2">{item.url.replace(/^https?:\/\//, '')}</span>
-                </a>
-              </div>
-            )}
-
-            {/* Full Notes */}
-            {item.notes && (
-              <div className="text-sm text-slate-700 bg-white/50 p-3 rounded-lg whitespace-pre-wrap border border-white/60">
-                {item.notes}
-              </div>
-            )}
-
-            {/* Ticket / Attachment */}
-            {item.attachmentUrl && (
-              <div className="mt-2">
-                <a href={item.attachmentUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-700 bg-blue-100 hover:bg-blue-200 px-3 py-2 rounded-lg transition-colors border border-blue-200">
-                  <Paperclip size={14} /> 
-                  <span className="truncate max-w-[180px]">{item.attachmentName || 'View Attachment'}</span>
-                </a>
-              </div>
-            )}
-
-            {/* Cost and Payment Status */}
-            {item.cost > 0 && (
-              <div className="flex items-center justify-between bg-white/60 p-3 rounded-lg border border-white/60 mt-2">
-                <span className="text-sm font-black text-slate-700">{formatCurrency(item.cost, item.currency)}</span>
-                <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md ${item.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
-                  {item.isPaid ? 'Paid' : 'Unpaid'}
+      <div className={`flex-1 bg-white border-l-4 ${catConfig.border} border-t border-r border-b border-slate-100 p-4 rounded-r-2xl rounded-tl-sm rounded-bl-sm shadow-sm relative transition-all hover:shadow-md ${isMiddle ? 'opacity-80' : ''}`}>
+         <div className="flex justify-between items-start mb-2">
+            <div className="flex gap-2 items-center flex-wrap">
+              {statusLabel && (
+                <span className={`text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md ${isMiddle ? 'bg-slate-200 text-slate-700' : 'bg-blue-100 text-blue-800'}`}>
+                  {statusLabel}
                 </span>
+              )}
+              <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
+                {subConfig.label}
+              </span>
+            </div>
+            {isExpanded && (
+              <div className="flex gap-2 opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => onEdit(item)} className="p-1 text-slate-400 hover:text-blue-600 transition-colors bg-slate-50 rounded-md"><Edit2 size={14} /></button>
+                <button onClick={() => onDelete(item.id)} className="p-1 text-slate-400 hover:text-red-600 transition-colors bg-slate-50 rounded-md"><Trash2 size={14} /></button>
               </div>
             )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+         </div>
 
-function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialData, tripId, storage }) {
-  const [category, setCategory] = useState(initialData?.category || 'transport');
-  
-  const [formData, setFormData] = useState({
-    subType: initialData?.subType || 'flight', 
-    title: initialData?.title || '', 
-    date: initialData?.date || defaultDate || minDate, 
-    time: initialData?.time || '10:00',
-    endDate: initialData?.endDate || defaultDate || minDate, 
-    endTime: initialData?.endTime || '', 
-    identifier: initialData?.identifier || '', 
-    operator: initialData?.operator || '',
-    location: initialData?.location || '', 
-    arrivalLocation: initialData?.arrivalLocation || '', 
-    // New City/Country Fields with legacy data migration logic
-    depCity: initialData?.depCity || (initialData?.category === 'transport' && initialData?.location ? initialData.location.split(',')[0].trim() : ''),
-    depCountry: initialData?.depCountry || (initialData?.category === 'transport' && initialData?.location && initialData.location.includes(',') ? initialData.location.split(',')[1].trim() : ''),
-    arrCity: initialData?.arrCity || (initialData?.category === 'transport' && initialData?.arrivalLocation ? initialData.arrivalLocation.split(',')[0].trim() : ''),
-    arrCountry: initialData?.arrCountry || (initialData?.category === 'transport' && initialData?.arrivalLocation && initialData.arrivalLocation.includes(',') ? initialData.arrivalLocation.split(',')[1].trim() : ''),
-    city: initialData?.city || '',
-    country: initialData?.country || '',
-    url: initialData?.url || '', 
-    cost: initialData?.cost || '', 
-    currency: initialData?.currency || 'AUD', 
-    isPaid: initialData?.isPaid || false, 
-    notes: initialData?.notes || '',
-    attachmentUrl: initialData?.attachmentUrl || '', 
-    attachmentName: initialData?.attachmentName || ''
-  });
+         <h3 className="font-bold text-lg leading-tight mb-1">{item.title}</h3>
+         
+         {item.operator && (
+           <p className="text-sm font-semibold text-slate-600 mb-2">
+             {item.operator} {item.identifier && `• ${item.identifier}`}
+           </p>
+         )}
 
-  const [file, setFile] = useState(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
+         {!isExpanded && (
+           <div className="flex flex-col gap-1 text-xs text-slate-500 mt-2">
+              {item.category === 'transport' ? (
+                 item.depCity && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.depCity} {item.arrCity && `→ ${item.arrCity}`}</span>
+              ) : (
+                 item.city && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.city} {item.country && `, ${item.country}`}</span>
+              )}
+           </div>
+         )}
+         
+         {!isExpanded && item.notes && <p className="text-xs text-slate-500 line-clamp-1 mt-2">{item.notes}</p>}
 
-  const handleCategoryChange = (newCat) => {
-    setCategory(newCat);
-    setFormData(prev => ({ ...prev, subType: Object.keys(SUB_TYPES[newCat])[0] }));
-  };
-
-  const handleChange = (e) => {
-    const { name, value, type, checked } = e.target;
-    setFormData(prev => ({
-      ...prev, 
-      [name]: type === 'checkbox' ? checked : value
-    }));
-  };
-
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    
-    let finalTitle = formData.title;
-    let finalLocation = formData.location;
-    let finalArrivalLocation = formData.arrivalLocation;
-
-    // Auto-generate title and legacy location strings for transport
-    if (category === 'transport') {
-       finalTitle = `${formData.depCity || 'Unknown'} to ${formData.arrCity || 'Unknown'} ${SUB_TYPES.transport[formData.subType]?.label || 'Transport'}`;
-       finalLocation = [formData.depCity, formData.depCountry].filter(Boolean).join(', ');
-       finalArrivalLocation = [formData.arrCity, formData.arrCountry].filter(Boolean).join(', ');
-    }
-
-    if (!finalTitle || !formData.date) return;
-    
-    // Ensure if no end date provided, it naturally caps to its start date so multi-day logic works safely
-    let safeEndDate = formData.endDate;
-    if (category !== 'accommodation' && !safeEndDate) safeEndDate = formData.date;
-
-    const itemToSave = { 
-      ...formData, 
-      title: finalTitle,
-      location: finalLocation,
-      arrivalLocation: finalArrivalLocation,
-      category, 
-      endDate: safeEndDate,
-      cost: formData.cost ? parseFloat(formData.cost) : 0 
-    };
-
-    if (file && storage && tripId) {
-      setIsUploading(true);
-      const fileRef = ref(storage, `trips/${tripId}/attachments/${Date.now()}_${file.name}`);
-      const uploadTask = uploadBytesResumable(fileRef, file);
-      
-      uploadTask.on('state_changed', 
-        (snapshot) => {
-          setUploadProgress(Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100));
-        },
-        (error) => {
-          console.error("Upload error", error);
-          setIsUploading(false);
-          onSave(itemToSave); // Save anyway if upload fails
-        },
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          itemToSave.attachmentUrl = downloadURL;
-          itemToSave.attachmentName = file.name;
-          onSave(itemToSave);
-        }
-      );
-    } else {
-      onSave(itemToSave);
-    }
-  };
-
-  return (
-    <div className="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in">
-      <div className="bg-white w-full h-[95%] sm:h-auto sm:max-h-[95vh] sm:max-w-md sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-8">
-        
-        <div className="flex justify-between items-center p-5 border-b border-slate-100">
-          <h2 className="text-xl font-bold">{initialData ? 'Edit Itinerary Item' : 'Add to Itinerary'}</h2>
-          <button type="button" onClick={onClose} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-600"><X size={20} /></button>
-        </div>
-
-        <div className="p-6 overflow-y-auto flex-1 custom-scrollbar">
-          <form id="add-item-form" onSubmit={handleSubmit} className="space-y-6">
-            
-            <div className="flex bg-slate-100 p-1.5 rounded-xl">
-              {Object.entries(CATEGORIES).map(([key, config]) => (
-                <button
-                  key={key} type="button" onClick={() => handleCategoryChange(key)}
-                  className={`flex-1 py-2.5 text-xs font-bold rounded-lg transition-all ${category === key ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  {config.label}
-                </button>
-              ))}
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Type</label>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {Object.entries(SUB_TYPES[category]).map(([key, config]) => {
-                  const Icon = config.icon;
-                  const isSelected = formData.subType === key;
-                  return (
-                    <button
-                      key={key} type="button" onClick={() => setFormData(prev => ({ ...prev, subType: key }))}
-                      className={`flex items-center gap-2 p-3 rounded-xl border-2 transition-all ${
-                        isSelected ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-600 hover:border-slate-200'
-                      }`}
-                    >
-                      <Icon size={16} />
-                      <span className="text-xs font-semibold">{config.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="space-y-4">
-              {/* Title is hidden for Transport since it auto-generates */}
-              {category !== 'transport' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
-                    {category === 'accommodation' ? 'Accommodation Name' : 'Activity Title'} <span className="text-red-500">*</span>
-                  </label>
-                  <input type="text" name="title" required value={formData.title} onChange={handleChange} placeholder={category === 'accommodation' ? "e.g. Le Meurice..." : "e.g. Louvre Museum..."} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+         {isExpanded && (
+            <div className="mt-4 space-y-3 pt-3 border-t border-slate-100 animate-in fade-in duration-200">
+              {start !== end && (
+                <div className="text-xs text-slate-600 flex flex-col gap-1.5 bg-slate-50 p-2 rounded-lg">
+                  <div className="flex items-center gap-1.5"><Clock size={14} className="text-slate-400" /> <span className="font-semibold">Start:</span> {formatDate(item.date)} at {item.time}</div>
+                  <div className="flex items-center gap-1.5"><Clock size={14} className="text-slate-400" /> <span className="font-semibold">End:</span> {formatDate(item.endDate)} at {item.endTime || '11:00'}</div>
                 </div>
               )}
 
-              {category === 'accommodation' && (
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2 text-xs font-bold text-slate-500 uppercase tracking-wider -mb-2 mt-2">City <span className="text-red-500">*</span> & Country <span className="text-red-500">*</span></div>
-                  <div>
-                    <input type="text" name="city" required value={formData.city} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                  </div>
-                  <div>
-                    <input type="text" name="country" required value={formData.country} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                  </div>
-                </div>
-              )}
-              
-              {category === 'transport' && (
-                <>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Airline / Operator</label>
-                      <input type="text" name="operator" value={formData.operator} onChange={handleChange} placeholder="e.g. Qantas" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              {item.category === 'transport' ? (
+                 <div className="flex flex-col gap-2 bg-slate-50 p-3 rounded-lg text-sm">
+                    <div className="flex items-start gap-2 text-slate-700">
+                       <MapPin size={16} className="flex-shrink-0 mt-0.5 text-blue-500" />
+                       <div>
+                         <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Departure</span> 
+                         <span className="font-semibold">{item.depCity} {item.depCountry && `, ${item.depCountry}`}</span>
+                         {item.depTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.depTerminal}</span>}
+                       </div>
                     </div>
-                    <div>
-                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Flight/Train No.</label>
-                      <input type="text" name="identifier" value={formData.identifier} onChange={handleChange} placeholder="e.g. QF 123" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    {item.arrCity && (
+                       <div className="flex items-start gap-2 text-slate-700 mt-1 pt-2 border-t border-slate-200/50">
+                          <MapPin size={16} className="flex-shrink-0 mt-0.5 text-emerald-500" />
+                          <div>
+                            <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Arrival</span> 
+                            <span className="font-semibold">{item.arrCity} {item.arrCountry && `, ${item.arrCountry}`}</span>
+                            {item.arrTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.arrTerminal}</span>}
+                          </div>
+                       </div>
+                    )}
+                 </div>
+              ) : (item.city || item.location || item.locationLocal) ? (
+                <div className="mt-1 flex flex-col gap-2">
+                  {item.city && (
+                    <div className="inline-flex items-start gap-1.5 text-sm text-slate-700">
+                      <MapPin size={14} className="mt-0.5 flex-shrink-0 text-indigo-400" />
+                      <div>
+                        <span className="font-semibold block">{item.city} {item.country && `, ${item.country}`}</span>
+                        {item.location && (
+                           <a href={mapUrl} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} className="text-blue-500 hover:text-blue-700 block mt-0.5 text-xs underline decoration-blue-200 underline-offset-2">{item.location}</a>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
-                    <div className="col-span-2 text-xs font-bold text-blue-800 uppercase tracking-wider mb-1">Departure Location <span className="text-red-500">*</span></div>
-                    <div>
-                      <input type="text" name="depCity" required value={formData.depCity} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  )}
+                  {item.locationLocal && (
+                    <div className="ml-5 text-sm font-medium text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100">
+                      {item.locationLocal}
                     </div>
-                    <div>
-                      <input type="text" name="depCountry" required value={formData.depCountry} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
-                    <div className="col-span-2 text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">Arrival Location <span className="text-red-500">*</span></div>
-                    <div>
-                      <input type="text" name="arrCity" required value={formData.arrCity} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                    </div>
-                    <div>
-                      <input type="text" name="arrCountry" required value={formData.arrCountry} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                    </div>
-                  </div>
-                </>
-              )}
-
-              <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
-                <div className="col-span-2">
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                     {category === 'transport' ? 'Departure Time' : (category === 'accommodation' ? 'Check-in' : 'Start')} <span className="text-red-500">*</span>
-                  </span>
-                </div>
-                <div>
-                  <input type="date" name="date" required min={minDate} max={maxDate} value={formData.date} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
-                </div>
-                <div>
-                  <input type="time" name="time" required value={formData.time} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
-                </div>
-
-                <div className="col-span-2 mt-2 border-t border-slate-200 pt-3">
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                     {category === 'transport' ? 'Arrival Time (Optional)' : (category === 'accommodation' ? <>Check-out <span className="text-red-500">*</span></> : 'End (Optional)')}
-                  </span>
-                </div>
-                <div>
-                  <input type="date" name="endDate" required={category==='accommodation'} min={formData.date} max={maxDate} value={formData.endDate} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
-                </div>
-                <div>
-                  <input type="time" name="endTime" required={category==='accommodation'} value={formData.endTime} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
-                </div>
-              </div>
-
-              {category !== 'transport' && (
-                <div>
-                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Address / Exact Location</label>
-                  <input type="text" name="location" value={formData.location} onChange={handleChange} placeholder="Full address..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                </div>
-              )}
-              
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Website URL (Optional)</label>
-                <input type="url" name="url" value={formData.url} onChange={handleChange} placeholder="https://..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100 space-y-4">
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Cost (Optional)</label>
-              <div className="flex gap-4 items-start">
-                <div className="flex-1">
-                  <input type="number" name="cost" min="0" step="0.01" value={formData.cost} onChange={handleChange} placeholder="0.00" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
-                </div>
-                <div className="w-28">
-                  <select name="currency" value={formData.currency} onChange={handleChange} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 appearance-none font-medium text-center">
-                    {currencies.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
-                </div>
-              </div>
-              <label className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
-                <input type="checkbox" name="isPaid" checked={formData.isPaid} onChange={handleChange} className="w-5 h-5 rounded text-blue-600 focus:ring-blue-500 border-slate-300" />
-                <span className="font-medium text-slate-700">I have already paid for this</span>
-              </label>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100">
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Notes</label>
-              <textarea name="notes" rows="3" value={formData.notes} onChange={handleChange} placeholder="Booking refs, terminal info..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"></textarea>
-            </div>
-
-            <div className="pt-4 border-t border-slate-100">
-              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Ticket / Document</label>
-              {formData.attachmentUrl && !file ? (
-                <div className="flex items-center justify-between bg-blue-50 p-3 rounded-xl border border-blue-100 text-sm mb-2">
-                   <span className="font-semibold text-blue-800 flex items-center gap-2"><Paperclip size={14} /> {formData.attachmentName}</span>
-                   <button type="button" onClick={() => setFormData(prev => ({...prev, attachmentUrl: '', attachmentName: ''}))} className="text-red-500 hover:text-red-700 text-xs font-bold">Remove</button>
+                  )}
                 </div>
               ) : null}
-              <div className="relative">
-                <input type="file" onChange={(e) => setFile(e.target.files[0])} className="block w-full text-sm text-slate-500 file:mr-4 file:py-2.5 file:px-4 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-slate-100 file:text-slate-700 hover:file:bg-slate-200 transition-colors border border-slate-200 rounded-xl" />
-              </div>
+
+              {item.url && (
+                <div className="mt-1">
+                  <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 transition-colors">
+                    <LinkIcon size={14} className="text-slate-400" />
+                    <span className="truncate max-w-[200px] underline decoration-slate-200 underline-offset-2">{item.url.replace(/^https?:\/\//, '')}</span>
+                  </a>
+                </div>
+              )}
+
+              {item.attachmentUrl && (
+                <div className="mt-2 pt-2 border-t border-slate-100">
+                  <a href={item.attachmentUrl} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm font-semibold text-blue-600 hover:text-blue-800 transition-colors">
+                    <Paperclip size={14} /> View Attachment {item.attachmentName && `(${item.attachmentName})`}
+                  </a>
+                </div>
+              )}
+
+              {item.notes && <div className="text-sm text-slate-700 bg-slate-50 p-3 rounded-lg whitespace-pre-wrap">{item.notes}</div>}
+
+              {item.cost > 0 && (
+                <div className="flex items-center justify-between bg-slate-50 p-3 rounded-lg mt-2">
+                  <span className="text-sm font-black text-slate-700">{formatCurrency(item.cost, item.currency)}</span>
+                  <span className={`text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-md ${item.isPaid ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>{item.isPaid ? 'Paid' : 'Unpaid'}</span>
+                </div>
+              )}
             </div>
-
-          </form>
-        </div>
-
-        <div className="p-5 border-t border-slate-100 bg-white sm:rounded-b-3xl">
-          <button type="submit" form="add-item-form" disabled={isUploading} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 disabled:bg-blue-400 transition-colors shadow-sm flex items-center justify-center gap-2">
-            {isUploading ? (
-               <>Uploading... {uploadProgress}%</>
-            ) : (
-               initialData ? 'Save Changes' : 'Save Item'
-            )}
-          </button>
-        </div>
+         )}
       </div>
     </div>
   );
 }
 
-function ChecklistView({ trip, db, appId, onDelete }) {
+function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const subConfig = SUB_TYPES.recommendation[item.subType] || SUB_TYPES.recommendation.other;
+  const TypeIcon = subConfig.icon;
+
+  return (
+    <div className={`border-2 p-4 rounded-xl shadow-sm transition-all duration-200 cursor-pointer relative overflow-hidden group ${item.isCompleted ? 'bg-slate-50 border-slate-200 opacity-70' : 'bg-white border-amber-200 hover:border-amber-300'}`} onClick={() => setIsExpanded(!isExpanded)}>
+      <div className="flex items-start gap-3">
+         <button onClick={(e) => { e.stopPropagation(); onToggle(item.id, item.isCompleted); }} className={`mt-1 w-6 h-6 rounded flex items-center justify-center border-2 flex-shrink-0 transition-colors ${item.isCompleted ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-slate-300 text-transparent hover:border-emerald-400'}`}>
+            <CheckSquare size={14} />
+         </button>
+         
+         <div className="flex-1">
+            <div className="flex justify-between items-start mb-1">
+              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md">
+                 <TypeIcon size={12} /> {subConfig.label}
+              </div>
+              {isExpanded && (
+                <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
+                  <button onClick={() => onEdit(item)} className="text-slate-400 hover:text-blue-600 transition-colors"><Edit2 size={14} /></button>
+                  <button onClick={() => onDelete(item.id)} className="text-slate-400 hover:text-red-600 transition-colors"><Trash2 size={14} /></button>
+                </div>
+              )}
+            </div>
+            
+            <h3 className={`font-bold text-lg leading-tight ${item.isCompleted ? 'line-through text-slate-500' : 'text-slate-800'}`}>{item.title}</h3>
+            
+            {!isExpanded && item.notes && <p className="text-xs text-slate-500 line-clamp-1 mt-1">{item.notes}</p>}
+
+            {isExpanded && (
+              <div className="mt-3 space-y-3 pt-3 border-t border-slate-100 animate-in fade-in duration-200">
+                {(item.city || item.location) ? (
+                  <div className="flex flex-col gap-1.5 text-sm">
+                    <div className="flex items-start gap-1.5 text-slate-700">
+                       <MapPin size={14} className="mt-0.5 flex-shrink-0 text-amber-500" />
+                       <div>
+                         <span className="font-semibold">{item.city} {item.country && `, ${item.country}`}</span>
+                         {item.location && <span className="block text-xs text-slate-500 mt-0.5">{item.location}</span>}
+                       </div>
+                    </div>
+                    {item.locationLocal && <div className="ml-5 text-sm font-medium text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100">{item.locationLocal}</div>}
+                  </div>
+                ) : null}
+                
+                {item.url && (
+                  <div>
+                    <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors">
+                      <LinkIcon size={14} /> <span className="underline decoration-blue-200 underline-offset-2">Visit Website</span>
+                    </a>
+                  </div>
+                )}
+                
+                {item.notes && <div className="text-sm text-slate-600 bg-slate-50 p-3 rounded-lg border border-slate-100 whitespace-pre-wrap">{item.notes}</div>}
+              </div>
+            )}
+         </div>
+      </div>
+    </div>
+  );
+}
+
+function ChecklistView({ trip, db, appId }) {
   const [newItem, setNewItem] = useState('');
   const checklist = trip.checklist || [];
 
   const handleToggle = async (itemId, currentStatus) => {
-    const updatedChecklist = checklist.map(item => 
-      item.id === itemId ? { ...item, checked: !currentStatus } : item
-    );
+    const updatedChecklist = checklist.map(item => item.id === itemId ? { ...item, checked: !currentStatus } : item);
     await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', trip.id), { checklist: updatedChecklist });
   };
 
@@ -1221,6 +906,11 @@ function ChecklistView({ trip, db, appId, onDelete }) {
     setNewItem('');
   };
 
+  const handleDelete = async (itemId) => {
+    const newChecklist = checklist.filter(i => i.id !== itemId);
+    await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', trip.id), { checklist: newChecklist });
+  };
+
   const completedCount = checklist.filter(i => i.checked).length;
   const progress = checklist.length === 0 ? 0 : (completedCount / checklist.length) * 100;
 
@@ -1230,7 +920,6 @@ function ChecklistView({ trip, db, appId, onDelete }) {
         <h2 className="text-xl font-bold">Packing & To-Do</h2>
         <p className="text-sm text-slate-500">Shared checklist for the trip.</p>
       </div>
-
       <div className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100">
         <div className="flex items-center justify-between mb-2">
            <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Progress</span>
@@ -1239,12 +928,10 @@ function ChecklistView({ trip, db, appId, onDelete }) {
         <div className="h-2.5 w-full bg-slate-100 rounded-full overflow-hidden mb-6">
            <div className="h-full bg-blue-500 rounded-full transition-all duration-500 ease-out" style={{ width: `${progress}%` }} />
         </div>
-
         <form onSubmit={handleAdd} className="flex gap-2 mb-6">
           <input type="text" value={newItem} onChange={e => setNewItem(e.target.value)} placeholder="Add an item..." className="flex-1 px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-sm" />
           <button type="submit" disabled={!newItem.trim()} className="bg-slate-800 text-white px-4 py-2.5 rounded-xl font-bold text-sm hover:bg-slate-900 transition-colors disabled:opacity-50"><Plus size={20} /></button>
         </form>
-
         <div className="space-y-1">
           {checklist.length === 0 ? (
             <div className="text-center py-6 text-slate-400 text-sm">List is empty. Add your first item!</div>
@@ -1255,7 +942,7 @@ function ChecklistView({ trip, db, appId, onDelete }) {
                    <CheckSquare size={14} />
                 </button>
                 <span className={`flex-1 text-sm font-medium transition-all ${item.checked ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{item.text}</span>
-                <button onClick={() => onDelete(item.id)} className="text-slate-300 hover:text-red-500 p-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16} /></button>
+                <button onClick={() => handleDelete(item.id)} className="text-slate-300 hover:text-red-500 p-1 opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"><Trash2 size={16} /></button>
               </div>
             ))
           )}
@@ -1307,6 +994,377 @@ function BudgetView({ summary }) {
   );
 }
 
+function AddTripForm({ onClose, onSave, initialData }) {
+  const [formData, setFormData] = useState(initialData || { name: '', startDate: '', endDate: '' });
+  const [error, setError] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!formData.name || !formData.startDate || !formData.endDate) return;
+    if (formData.startDate > formData.endDate) { setError("End date cannot be before start date."); return; }
+    setError('');
+    onSave(formData);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in">
+      <div className="bg-white w-full sm:max-w-md sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-8">
+        <div className="flex justify-between items-center p-5 border-b border-slate-100">
+          <h2 className="text-xl font-bold">{initialData ? 'Edit Trip' : 'Plan a New Trip'}</h2>
+          <button onClick={onClose} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-600"><X size={20} /></button>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="flex flex-col">
+          <div className="p-6 space-y-5">
+            {error && <div className="mb-4 text-sm text-red-600 bg-red-50 p-3 rounded-xl border border-red-100 flex items-center gap-2"><AlertCircle size={16} />{error}</div>}
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Trip Name <span className="text-red-500">*</span></label>
+              <input type="text" required value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. Summer in Tokyo" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Start Date <span className="text-red-500">*</span></label>
+                <input type="date" required value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">End Date <span className="text-red-500">*</span></label>
+                <input type="date" required min={formData.startDate} value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+            </div>
+          </div>
+          <div className="p-5 border-t border-slate-100 bg-white sm:rounded-b-3xl mt-auto">
+            <button type="submit" className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 transition-colors shadow-sm">{initialData ? 'Save Changes' : 'Create Trip'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialData }) {
+  const [category, setCategory] = useState(initialData?.category || 'transport');
+  const [error, setError] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  
+  const [formData, setFormData] = useState({
+    subType: initialData?.subType || 'flight', 
+    title: initialData?.title || '', 
+    date: initialData?.date || defaultDate || minDate, 
+    time: initialData?.time || '10:00',
+    // Ultra-safe fallback for older items missing an end date
+    endDate: initialData?.endDate || initialData?.date || defaultDate || minDate, 
+    endTime: initialData?.endTime || '', 
+    identifier: initialData?.identifier || '', 
+    operator: initialData?.operator || '',
+    location: initialData?.location || '', 
+    locationLocal: initialData?.locationLocal || '',
+    depCity: initialData?.depCity || '',
+    depCountry: initialData?.depCountry || '',
+    depTerminal: initialData?.depTerminal || '',
+    arrCity: initialData?.arrCity || '',
+    arrCountry: initialData?.arrCountry || '',
+    arrTerminal: initialData?.arrTerminal || '',
+    city: initialData?.city || '',
+    country: initialData?.country || '',
+    url: initialData?.url || '', 
+    cost: initialData?.cost || '', 
+    currency: initialData?.currency || 'AUD', 
+    isPaid: initialData?.isPaid || false, 
+    notes: initialData?.notes || '',
+    attachmentUrl: initialData?.attachmentUrl || '',
+    attachmentName: initialData?.attachmentName || '',
+  });
+
+  const handleCategoryChange = (newCat) => {
+    setCategory(newCat);
+    setFormData(prev => ({ ...prev, subType: Object.keys(SUB_TYPES[newCat])[0] }));
+  };
+
+  const handleChange = (e) => {
+    const { name, value, type, checked } = e.target;
+    setFormData(prev => {
+       const updates = { [name]: type === 'checkbox' ? checked : value };
+       // Smart logic: Push the end date forward if user moves start date past it
+       if (name === 'date' && prev.endDate && value > prev.endDate) {
+          updates.endDate = value;
+       }
+       return { ...prev, ...updates };
+    });
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    let finalTitle = formData.title;
+
+    if (category === 'transport') {
+       if (!formData.depCity || !formData.arrCity) { setError("Please provide Departure and Arrival cities."); return; }
+       finalTitle = `${formData.depCity} to ${formData.arrCity} ${SUB_TYPES.transport[formData.subType]?.label || 'Transport'}`;
+    } else if (category === 'recommendation') {
+       if (!formData.city) { setError("Please provide the city for this idea."); return; }
+       if (!finalTitle) { setError("Please provide a title."); return; }
+    } else {
+       if (!finalTitle) { setError("Please provide a title."); return; }
+    }
+
+    if (category !== 'recommendation' && !formData.date) {
+      setError("Please provide a start date."); return; 
+    }
+
+    let finalAttachmentUrl = formData.attachmentUrl;
+    let finalAttachmentName = formData.attachmentName;
+
+    if (selectedFile && storage) {
+      setIsUploading(true);
+      try {
+        const fileRef = storageRef(storage, `attachments/${Date.now()}_${selectedFile.name}`);
+        const snapshot = await uploadBytes(fileRef, selectedFile);
+        finalAttachmentUrl = await getDownloadURL(snapshot.ref);
+        finalAttachmentName = selectedFile.name;
+      } catch (err) {
+        console.error(err);
+        setError("Failed to upload file. Check your Firebase Storage rules.");
+        setIsUploading(false);
+        return;
+      }
+      setIsUploading(false);
+    }
+
+    const itemToSave = { 
+      ...formData, 
+      title: finalTitle,
+      category, 
+      cost: formData.cost ? parseFloat(formData.cost) : 0,
+      attachmentUrl: finalAttachmentUrl,
+      attachmentName: finalAttachmentName
+    };
+    onSave(itemToSave);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-6 animate-in fade-in">
+      <div className="bg-white w-full h-[95%] sm:h-auto sm:max-h-[95vh] sm:max-w-md sm:rounded-3xl rounded-t-3xl shadow-2xl flex flex-col animate-in slide-in-from-bottom-8">
+        
+        <div className="flex justify-between items-center p-5 border-b border-slate-100">
+          <h2 className="text-xl font-bold">{initialData ? 'Edit Item' : 'Add to Trip'}</h2>
+          <button type="button" onClick={onClose} className="p-2 bg-slate-100 hover:bg-slate-200 rounded-full text-slate-600"><X size={20} /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="flex flex-col h-full overflow-hidden">
+          <div className="p-6 overflow-y-auto flex-1 custom-scrollbar space-y-6">
+            {error && <div className="mb-4 text-sm text-red-600 bg-red-50 p-3 rounded-xl border border-red-100 flex items-center gap-2"><AlertCircle size={16} />{error}</div>}
+            
+            <div className="flex bg-slate-100 p-1.5 rounded-xl">
+              {Object.entries(CATEGORIES).map(([key, config]) => (
+                <button
+                  key={key} type="button" onClick={() => handleCategoryChange(key)}
+                  className={`flex-1 py-2.5 text-[11px] sm:text-xs font-bold rounded-lg transition-all ${category === key ? 'bg-white shadow-sm text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  {config.label}
+                </button>
+              ))}
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Type</label>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {Object.entries(SUB_TYPES[category]).map(([key, config]) => {
+                  const Icon = config.icon;
+                  const isSelected = formData.subType === key;
+                  return (
+                    <button
+                      key={key} type="button" onClick={() => setFormData(prev => ({ ...prev, subType: key }))}
+                      className={`flex items-center gap-2 p-3 rounded-xl border-2 transition-all ${
+                        isSelected ? 'border-blue-500 bg-blue-50 text-blue-700' : 'border-slate-100 bg-white text-slate-600 hover:border-slate-200'
+                      }`}
+                    >
+                      <Icon size={16} />
+                      <span className="text-xs font-semibold">{config.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* IDEAS SECTION */}
+              {category === 'recommendation' && (
+                <div className="grid grid-cols-2 gap-4 bg-amber-50/50 p-4 rounded-xl border border-amber-100">
+                  <div className="col-span-2 text-xs font-bold text-amber-800 uppercase tracking-wider -mb-1">Target City <span className="text-red-500">*</span></div>
+                  <div>
+                    <input type="text" name="city" required value={formData.city || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <input type="text" name="country" required value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  </div>
+                </div>
+              )}
+
+              {/* NON-TRANSPORT TITLE */}
+              {category !== 'transport' && (
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
+                    {category === 'accommodation' ? 'Accommodation Name' : 'Title'} <span className="text-red-500">*</span>
+                  </label>
+                  <input type="text" name="title" required value={formData.title} onChange={handleChange} placeholder={category === 'accommodation' ? "e.g. Le Meurice..." : "e.g. Louvre Museum..."} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                </div>
+              )}
+
+              {/* ACCOMMODATION / ACTIVITY CITY */}
+              {(category === 'accommodation' || category === 'activity') && (
+                <div className="grid grid-cols-2 gap-4 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
+                  <div className="col-span-2 text-xs font-bold text-indigo-800 uppercase tracking-wider -mb-1">Location <span className="text-red-500">*</span></div>
+                  <div>
+                    <input type="text" name="city" required value={formData.city || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <input type="text" name="country" required value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  </div>
+                </div>
+              )}
+
+              {/* TRANSPORT FIELDS */}
+              {category === 'transport' && (
+                <>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Operator</label>
+                      <input type="text" name="operator" value={formData.operator || ''} onChange={handleChange} placeholder="e.g. Qantas" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Identifier</label>
+                      <input type="text" name="identifier" value={formData.identifier || ''} onChange={handleChange} placeholder="e.g. QF 123" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 bg-blue-50/50 p-4 rounded-xl border border-blue-100">
+                    <div className="col-span-2 text-xs font-bold text-blue-800 uppercase tracking-wider mb-1">Departure <span className="text-red-500">*</span></div>
+                    <div>
+                      <input type="text" name="depCity" required value={formData.depCity || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <input type="text" name="depCountry" required value={formData.depCountry || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                    <div className="col-span-2">
+                      <input type="text" name="depTerminal" value={formData.depTerminal || ''} onChange={handleChange} placeholder="Airport / Station / Terminal (Optional)" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 bg-emerald-50/50 p-4 rounded-xl border border-emerald-100">
+                    <div className="col-span-2 text-xs font-bold text-emerald-800 uppercase tracking-wider mb-1">Arrival <span className="text-red-500">*</span></div>
+                    <div>
+                      <input type="text" name="arrCity" required value={formData.arrCity || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                    <div>
+                      <input type="text" name="arrCountry" required value={formData.arrCountry || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                    <div className="col-span-2">
+                      <input type="text" name="arrTerminal" value={formData.arrTerminal || ''} onChange={handleChange} placeholder="Airport / Station / Terminal (Optional)" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* DATES & TIMES (HIDDEN FOR RECOMMENDATIONS) */}
+              {category !== 'recommendation' && (
+                <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+                  <div className="col-span-2">
+                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                       {category === 'transport' ? 'Departure Time' : (category === 'accommodation' ? 'Check-in' : 'Start')} <span className="text-red-500">*</span>
+                    </span>
+                  </div>
+                  <div>
+                    <input type="date" name="date" required min={minDate} max={maxDate} value={formData.date} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
+                  </div>
+                  <div>
+                    <input type="time" name="time" required value={formData.time} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
+                  </div>
+
+                  <div className="col-span-2 mt-2 border-t border-slate-200 pt-3">
+                    <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                       {category === 'transport' ? 'Arrival Time (Optional)' : (category === 'accommodation' ? <>Check-out <span className="text-red-500">*</span></> : 'End (Optional)')}
+                    </span>
+                  </div>
+                  <div>
+                    <input type="date" name="endDate" required={category==='accommodation'} min={formData.date} max={maxDate} value={formData.endDate || ''} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
+                  </div>
+                  <div>
+                    <input type="time" name="endTime" required={category==='accommodation'} value={formData.endTime} onChange={handleChange} className="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white focus:outline-none focus:border-blue-500 text-sm" />
+                  </div>
+                </div>
+              )}
+
+              {/* ADDRESS FIELDS */}
+              {category !== 'transport' && (
+                <div className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">English Address / Exact Location</label>
+                    <input type="text" name="location" value={formData.location || ''} onChange={handleChange} placeholder="Full English address..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Local Language Address</label>
+                    <input type="text" name="locationLocal" value={formData.locationLocal || ''} onChange={handleChange} placeholder="Paste Chinese, Arabic, Japanese, etc..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 font-medium" />
+                  </div>
+                </div>
+              )}
+              
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Website URL</label>
+                <input type="url" name="url" value={formData.url} onChange={handleChange} placeholder="https://..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+              </div>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 space-y-4">
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider">Cost</label>
+              <div className="flex gap-4 items-start">
+                <div className="flex-1">
+                  <input type="number" name="cost" min="0" step="0.01" value={formData.cost} onChange={handleChange} placeholder="0.00" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                </div>
+                <div className="w-28">
+                  <select name="currency" value={formData.currency} onChange={handleChange} className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 appearance-none font-medium text-center">
+                    {currencies.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                </div>
+              </div>
+              <label className="flex items-center gap-3 p-4 border border-slate-200 rounded-xl cursor-pointer hover:bg-slate-50 transition-colors">
+                <input type="checkbox" name="isPaid" checked={formData.isPaid} onChange={handleChange} className="w-5 h-5 rounded text-blue-600 focus:ring-blue-500 border-slate-300" />
+                <span className="font-medium text-slate-700">I have already paid for this</span>
+              </label>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100">
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Notes</label>
+              <textarea name="notes" rows="3" value={formData.notes} onChange={handleChange} placeholder="Booking refs, terminal info..." className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 resize-none"></textarea>
+            </div>
+
+            <div className="pt-4 border-t border-slate-100">
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Attachment (Ticket / Booking PDF)</label>
+              <div className="flex items-center gap-3">
+                <label className="flex-1 flex items-center justify-center gap-2 px-4 py-3 border-2 border-dashed border-slate-300 rounded-xl bg-slate-50 hover:bg-slate-100 hover:border-blue-400 cursor-pointer transition-colors">
+                  <UploadCloud size={18} className="text-slate-500" />
+                  <span className="text-sm font-medium text-slate-600 truncate">
+                    {selectedFile ? selectedFile.name : (formData.attachmentName || 'Upload File or Image')}
+                  </span>
+                  <input type="file" className="hidden" onChange={(e) => setSelectedFile(e.target.files[0])} accept="image/*,application/pdf" />
+                </label>
+                {(selectedFile || formData.attachmentUrl) && (
+                  <button type="button" onClick={() => { setSelectedFile(null); setFormData(prev => ({...prev, attachmentUrl: '', attachmentName: ''})) }} className="p-3 text-red-500 hover:bg-red-50 rounded-xl transition-colors border border-red-100" title="Remove attachment">
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-5 border-t border-slate-100 bg-white sm:rounded-b-3xl mt-auto">
+            <button type="submit" disabled={isUploading} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-70 flex items-center justify-center gap-2">
+              {isUploading ? <><Loader2 size={18} className="animate-spin" /> Uploading...</> : (initialData ? 'Save Changes' : 'Save Item')}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 function ShareModal({ trip, onClose }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = () => {
@@ -1317,7 +1375,7 @@ function ShareModal({ trip, onClose }) {
   };
 
   return (
-    <div className="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
       <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 text-center">
          <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4"><Share2 size={32} /></div>
          <h2 className="text-xl font-bold mb-2">Share this Trip</h2>
@@ -1348,7 +1406,7 @@ function JoinTripModal({ onClose, onJoin }) {
   };
 
   return (
-    <div className="absolute inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
+    <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
       <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden relative">
         <div className="flex justify-between items-center p-5 border-b border-slate-100 bg-slate-50">
           <h2 className="text-lg font-bold">Join a Trip</h2>
@@ -1374,7 +1432,7 @@ function AuthScreen({ auth }) {
 
   const handleEmailAuth = async (e) => {
     e.preventDefault();
-    if (!auth) return setError("Firebase is not connected. Check your config.");
+    if (!auth) return setError("Firebase is not connected.");
     setError(''); setLoading(true);
     try {
       if (isLogin) await signInWithEmailAndPassword(auth, email, password);
@@ -1384,14 +1442,14 @@ function AuthScreen({ auth }) {
   };
 
   const handleGoogleAuth = async () => {
-    if (!auth) return setError("Firebase is not connected. Check your config.");
+    if (!auth) return setError("Firebase is not connected.");
     setError('');
     const provider = new GoogleAuthProvider();
     try { await signInWithPopup(auth, provider); } catch (err) { setError(err.message); }
   };
 
   const handleGuestAuth = async () => {
-    if (!auth) return setError("Firebase is not connected. Check your config.");
+    if (!auth) return setError("Firebase is not connected.");
     setError('');
     try { await signInAnonymously(auth); } catch (err) { setError(err.message); }
   };
