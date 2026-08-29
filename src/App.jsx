@@ -16,7 +16,7 @@ import {
   X, ChevronLeft, ChevronRight, Clock, Globe2, CalendarDays, ExternalLink, 
   Link as LinkIcon, Share2, UserPlus, AlertCircle, Edit2, LogOut, CheckSquare, 
   Printer, Lightbulb, Utensils, Wine, Landmark, Ticket,
-  Paperclip, UploadCloud, Loader2
+  Paperclip, UploadCloud, Loader2, Coffee
 } from 'lucide-react';
 
 const firebaseConfig = {
@@ -36,6 +36,7 @@ try {
   db = getFirestore(app);
   storage = getStorage(app);
   
+  // Enable offline mode
   enableIndexedDbPersistence(db).catch((err) => {
     console.warn("Offline persistence notice:", err.code);
   });
@@ -92,6 +93,7 @@ const SUB_TYPES = {
   recommendation: {
     place: { icon: MapPin, label: 'Place to Visit' },
     eatery: { icon: Utensils, label: 'Eateries' },
+    cafe: { icon: Coffee, label: 'Cafes / Coffee' },
     bar: { icon: Wine, label: 'Bars/Clubs' },
     museum: { icon: Landmark, label: 'Museums' },
     activity: { icon: Ticket, label: 'Activities' },
@@ -118,6 +120,7 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
 
+  // Auth Listener
   useEffect(() => {
     if (!auth) {
       setIsAuthLoading(false);
@@ -130,6 +133,7 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  // Fetch Trips
   useEffect(() => {
     if (!user || !db) return;
     const tripsRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips');
@@ -143,6 +147,7 @@ export default function App() {
 
   const activeTrip = trips.find(t => t.id === activeTripId);
 
+  // Bulletproof filter for chronological sorting
   const itemsForSelectedDate = useMemo(() => {
     if (!activeTrip || !selectedDate) return [];
     return activeTrip.items
@@ -160,7 +165,7 @@ export default function App() {
            const end = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
            if (start === date) return item.time || '00:00';
            if (end === date && start !== end) return item.endTime || '23:59';
-           return '00:00'; 
+           return '00:00'; // Carry-overs pin to the top of the day
         };
         
         const timeA = getSortTime(a, selectedDate);
@@ -170,125 +175,94 @@ export default function App() {
       });
   }, [activeTrip, selectedDate]);
 
-  const currentLocations = useMemo(() => {
+  // Determine current cities to show relevant Ideas across days
+  const currentCities = useMemo(() => {
     if (!activeTrip || !selectedDate) return [];
-    const locations = new Map();
-
-    const normalize = (str) => str ? str.trim().toLowerCase() : '';
-
-    // 1. Direct explicit locations active on this specific date
+    let cities = new Set();
+    
+    // 1. Accommodations spanning over this date
     activeTrip.items.forEach(i => {
-      const start = i.date;
-      const end = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
-      
-      // Accommodations spanning this date
-      if (i.category === 'accommodation' && (i.city || i.locationCity)) {
+      if (i.category === 'accommodation' && i.city) {
+        const start = i.date;
+        const end = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
         if (selectedDate >= start && selectedDate <= end) {
-          const c = i.city || i.locationCity;
-          const country = i.country || i.locationCountry || '';
-          locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
+          cities.add(i.city.trim().toLowerCase());
         }
-      }
-
-      // Activities specifically on this date
-      if (i.category === 'activity' && (i.city || i.locationCity) && start === selectedDate) {
-        const c = i.city || i.locationCity;
-        const country = i.country || i.locationCountry || '';
-        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
-      }
-
-      // Transport departing on this date
-      if (i.category === 'transport' && (i.depCity || i.departureCity) && start === selectedDate) {
-        const c = i.depCity || i.departureCity;
-        const country = i.depCountry || i.departureCountry || '';
-        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
-      }
-
-      // Transport arriving on this date
-      if (i.category === 'transport' && (i.arrCity || i.arrivalCity) && end === selectedDate) {
-        const c = i.arrCity || i.arrivalCity;
-        const country = i.arrCountry || i.arrivalCountry || '';
-        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
       }
     });
 
-    // 2. If NO strong explicit locations are found for today, figure out where we last were!
-    if (locations.size === 0) {
-      const pastLocationEvents = [];
-      activeTrip.items.forEach(i => {
-         // Past Transport Arrivals
-         if (i.category === 'transport' && (i.arrCity || i.arrivalCity)) {
-           const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
-           if (d <= selectedDate) {
-              pastLocationEvents.push({ 
-                date: d, 
-                time: i.endTime || i.time || '00:00', 
-                city: i.arrCity || i.arrivalCity, 
-                country: i.arrCountry || i.arrivalCountry 
-              });
-           }
-         }
-         // Past Accommodations that have ended
-         if (i.category === 'accommodation' && (i.city || i.locationCity)) {
-           const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
-           if (d <= selectedDate) {
-              pastLocationEvents.push({ 
-                date: d, 
-                time: i.endTime || '00:00', 
-                city: i.city || i.locationCity, 
-                country: i.country || i.locationCountry 
-              });
-           }
-         }
-      });
-
-      // Sort chronologically to find the absolute latest place we were
-      pastLocationEvents.sort((a,b) => {
-         if (a.date === b.date) return a.time.localeCompare(b.time);
-         return a.date.localeCompare(b.date);
-      });
-
-      if (pastLocationEvents.length > 0) {
-         const latest = pastLocationEvents[pastLocationEvents.length - 1];
-         locations.set(normalize(latest.city), { 
-           city: normalize(latest.city), 
-           country: normalize(latest.country), 
-           displayCity: latest.city 
-         });
+    // 2. Activities on this date
+    activeTrip.items.forEach(i => {
+      if (i.category === 'activity' && i.city && i.date === selectedDate) {
+        cities.add(i.city.trim().toLowerCase());
       }
+    });
+
+    // 3. Transport arriving before or on this date
+    const pastTransports = activeTrip.items
+      .filter(i => i.category === 'transport' && i.arrCity)
+      .filter(i => {
+         const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+         return d <= selectedDate;
+      })
+      .sort((a,b) => {
+        const aDate = (a.endDate && a.endDate.trim() !== '') ? a.endDate : a.date;
+        const bDate = (b.endDate && b.endDate.trim() !== '') ? b.endDate : b.date;
+        return aDate.localeCompare(bDate);
+      });
+    
+    // Only fall back to previous flight if we don't have an active hotel or event today
+    if (cities.size === 0 && pastTransports.length > 0) {
+      cities.add(pastTransports[pastTransports.length - 1].arrCity.trim().toLowerCase());
     }
 
-    return Array.from(locations.values());
+    // 4. Transport departing on this date
+    activeTrip.items.forEach(i => {
+      if (i.category === 'transport' && i.depCity && i.date === selectedDate) {
+        cities.add(i.depCity.trim().toLowerCase());
+      }
+    });
+
+    return Array.from(cities);
   }, [activeTrip, selectedDate]);
 
+  const defaultLocationInfo = useMemo(() => {
+    if (!activeTrip || currentCities.length === 0) return { city: '', country: '' };
+    const targetCity = currentCities[0]; 
+    
+    let foundCity = targetCity;
+    let foundCountry = '';
+
+    // Search past items to find the original casing and country attached to this city
+    for (const i of activeTrip.items) {
+      if (i.category === 'accommodation' && i.city && i.city.trim().toLowerCase() === targetCity) {
+        foundCity = i.city; foundCountry = i.country || ''; break;
+      }
+      if (i.category === 'transport' && i.arrCity && i.arrCity.trim().toLowerCase() === targetCity) {
+        foundCity = i.arrCity; foundCountry = i.arrCountry || ''; break;
+      }
+    }
+    
+    const formattedCity = foundCity.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+    return { city: formattedCity, country: foundCountry };
+  }, [activeTrip, currentCities]);
+
+  // Filter recommendations based on current cities
   const recommendationsForToday = useMemo(() => {
     if (!activeTrip) return [];
     const ideas = activeTrip.items.filter(i => i.category === 'recommendation');
     
-    if (currentLocations.length === 0) {
-      // Fallback: If we don't know where the user is, only show TRUE global ideas
-      return ideas.filter(idea => {
-        const c = idea.city || idea.locationCity;
-        return !c || c.trim() === '';
-      });
+    if (currentCities.length === 0) {
+      return ideas; // Fallback: Show all ideas safely if we don't know where the user is
     }
 
     return ideas.filter(idea => {
-      const rawCity = idea.city || idea.locationCity;
-      const rawCountry = idea.country || idea.locationCountry;
-      
-      if (!rawCity || rawCity.trim() === '') return true; // Always show global ideas
-      
-      const ideaCity = rawCity.trim().toLowerCase();
-      const ideaCountry = rawCountry ? rawCountry.trim().toLowerCase() : '';
-      
-      return currentLocations.some(loc => {
-        const cityMatch = loc.city.includes(ideaCity) || ideaCity.includes(loc.city);
-        const countryMatch = (!ideaCountry || !loc.country) ? true : (loc.country.includes(ideaCountry) || ideaCountry.includes(loc.country));
-        return cityMatch && countryMatch;
-      });
+      if (!idea.city) return true;
+      const ideaCity = idea.city.trim().toLowerCase();
+      // Loose matching allows "Tokyo" to match "Tokyo, Japan"
+      return currentCities.some(cc => cc.includes(ideaCity) || ideaCity.includes(cc));
     });
-  }, [activeTrip, currentLocations]);
+  }, [activeTrip, currentCities]);
 
   const budgetSummary = useMemo(() => {
     if (!activeTrip) return {};
@@ -390,6 +364,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 flex justify-center font-sans text-slate-800">
       <div className="w-full max-w-xl bg-white shadow-2xl flex flex-col relative overflow-hidden sm:border-x sm:border-slate-200">
         
+        {/* Header */}
         <div className="bg-slate-900 text-white px-6 pt-12 pb-6 rounded-b-3xl shadow-md z-10 transition-all duration-300">
           {!activeTrip ? (
             <div className="flex justify-between items-start">
@@ -437,6 +412,7 @@ export default function App() {
           )}
         </div>
 
+        {/* Content Area */}
         <div className="flex-1 overflow-y-auto pb-24 relative print:overflow-visible print:pb-0">
           {!activeTrip && (
             <div className="p-6 space-y-4 animate-in fade-in duration-300">
@@ -476,7 +452,7 @@ export default function App() {
                 <DayView 
                   date={selectedDate} 
                   items={itemsForSelectedDate} 
-                  currentLocations={currentLocations}
+                  currentCities={currentCities}
                   recommendations={recommendationsForToday}
                   onDelete={requestDeleteItem}
                   onToggleIdea={handleToggleIdea}
@@ -519,6 +495,8 @@ export default function App() {
             minDate={activeTrip.startDate}
             maxDate={activeTrip.endDate}
             initialData={editingItem}
+            defaultCity={defaultLocationInfo.city}
+            defaultCountry={defaultLocationInfo.country}
           />
         )}
         {isAddTripModalOpen && (
@@ -625,7 +603,7 @@ function CalendarView({ trip, onSelectDate }) {
   );
 }
 
-function DayView({ date, items, currentLocations, recommendations, onDelete, onToggleIdea, onEdit, tripStart, tripEnd, onDateChange }) {
+function DayView({ date, items, currentCities, recommendations, onDelete, onToggleIdea, onEdit, tripStart, tripEnd, onDateChange }) {
   const handlePrevDay = () => {
     const d = new Date(date);
     d.setUTCDate(d.getUTCDate() - 1);
@@ -643,123 +621,64 @@ function DayView({ date, items, currentLocations, recommendations, onDelete, onT
   const isFirstDay = date <= tripStart;
   const isLastDay = date >= tripEnd;
   
-  const primaryCity = currentLocations.length > 0 
-    ? currentLocations[0].displayCity
-    : '';
+  // Group recommendations by subType for rendering
+  const groupedRecommendations = recommendations.reduce((acc, idea) => {
+    const type = idea.subType || 'other';
+    if (!acc[type]) acc[type] = [];
+    acc[type].push(idea);
+    return acc;
+  }, {});
 
-  // Timeline tracking to inject Location Change badges
-  let runningCity = primaryCity;
-  const timelineNodes = [];
+  // Generate dynamic badges inside the timeline
+  let lastCity = null;
+  const timelineElements = [];
 
-  items.forEach((item) => {
-    timelineNodes.push(
-      <TripItemCard 
-        key={item.id} 
-        item={item} 
-        date={date} 
-        onEdit={onEdit} 
-        onDelete={onDelete} 
-      />
-    );
-
-    let newCity = null;
-    let newCountry = '';
-    let badgeAction = '';
-    let badgeColor = '';
-    let textColor = '';
-    let bgColor = '';
-    let borderColor = '';
-
-    if (item.category === 'transport') {
-      const arrCity = item.arrCity || item.arrivalCity;
-      const arrCountry = item.arrCountry || item.arrivalCountry;
-      const endD = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
-      
-      if (arrCity && endD === date) {
-        newCity = arrCity;
-        newCountry = arrCountry;
-        badgeAction = 'Arrived in';
-        badgeColor = 'bg-emerald-500';
-        textColor = 'text-emerald-900';
-        bgColor = 'bg-emerald-50';
-        borderColor = 'border-emerald-100';
-      }
-    } 
-    else if (item.category === 'accommodation') {
-      const acity = item.city || item.locationCity;
-      const acountry = item.country || item.locationCountry;
-      if (acity && item.date === date) {
-         newCity = acity;
-         newCountry = acountry;
-         badgeAction = 'Checked into';
-         badgeColor = 'bg-indigo-500';
-         textColor = 'text-indigo-900';
-         bgColor = 'bg-indigo-50';
-         borderColor = 'border-indigo-100';
-      }
-    }
-
-    if (newCity && newCity.trim().toLowerCase() !== runningCity.trim().toLowerCase()) {
-      
-      // 1. Check out of / Leave previous city if it exists
-      if (runningCity && runningCity.trim() !== '') {
-        timelineNodes.push(
-          <div key={`loc-out-${item.id}`} className="flex items-center gap-3 my-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
-            <div className="w-8 h-8 rounded-full bg-slate-400 text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0">
-              <MapPin size={14} />
-            </div>
-            <span className="font-bold text-slate-700 text-sm bg-slate-100 px-3 py-1.5 rounded-lg shadow-sm border border-slate-200">
-              Left {runningCity}
-            </span>
-          </div>
-        );
-      }
-
-      // 2. Check into / Arrive in new city
-      timelineNodes.push(
-        <div key={`loc-in-${item.id}`} className="flex items-center gap-3 my-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
-          <div className={`w-8 h-8 rounded-full ${badgeColor} text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0`}>
-            <MapPin size={14} />
-          </div>
-          <span className={`font-bold ${textColor} text-sm ${bgColor} px-3 py-1.5 rounded-lg shadow-sm border ${borderColor}`}>
-            {badgeAction} {newCity}{newCountry ? `, ${newCountry}` : ''}
-          </span>
-        </div>
-      );
-      
-      runningCity = newCity;
-    }
-  });
-
-  // Group recommendations by multiple distinct cities
-  const globalIdeas = [];
-  const localizedIdeasMap = new Map();
-
-  if (recommendations && recommendations.length > 0) {
-    recommendations.forEach(r => {
-       const rCity = (r.city || r.locationCity || '').trim();
-       if (!rCity) {
-          globalIdeas.push(r); // Blank cities are global ideas
-       } else {
-          // Find which active city this idea belongs to
-          const matchedLoc = currentLocations.find(loc => 
-             loc.city.includes(rCity.toLowerCase()) || rCity.toLowerCase().includes(loc.city)
-          );
-          
-          if (matchedLoc) {
-             if (!localizedIdeasMap.has(matchedLoc.displayCity)) {
-                localizedIdeasMap.set(matchedLoc.displayCity, []);
-             }
-             localizedIdeasMap.get(matchedLoc.displayCity).push(r);
-          } else {
-             // Fallback just in case
-             globalIdeas.push(r);
-          }
+  items.forEach((item, index) => {
+    const isStart = item.date === date;
+    
+    // Check for arrivals or check-ins to drop badges
+    if (item.category === 'transport' && item.arrCity && isStart) {
+       if (lastCity && lastCity.toLowerCase() !== item.arrCity.toLowerCase()) {
+           timelineElements.push(
+               <div key={`left-${index}`} className="relative flex justify-center py-2 z-10 animate-in fade-in zoom-in duration-300">
+                  <div className="bg-slate-200 text-slate-700 text-[10px] uppercase tracking-wider font-bold px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm border border-slate-300">
+                     <MapPin size={12} /> Left {lastCity}
+                  </div>
+               </div>
+           );
        }
-    });
-  }
-  
-  const localizedIdeas = Array.from(localizedIdeasMap.entries());
+       timelineElements.push(
+           <div key={`arr-${index}`} className="relative flex justify-center py-2 z-10 animate-in fade-in zoom-in duration-300">
+              <div className="bg-blue-100 text-blue-800 text-[10px] uppercase tracking-wider font-bold px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm border border-blue-200">
+                 <MapPin size={12} /> Arrived in {item.arrCity}
+              </div>
+           </div>
+       );
+       lastCity = item.arrCity;
+    } else if (item.category === 'accommodation' && item.city && isStart) {
+       if (lastCity && lastCity.toLowerCase() !== item.city.toLowerCase()) {
+           timelineElements.push(
+               <div key={`left-${index}`} className="relative flex justify-center py-2 z-10 animate-in fade-in zoom-in duration-300">
+                  <div className="bg-slate-200 text-slate-700 text-[10px] uppercase tracking-wider font-bold px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm border border-slate-300">
+                     <MapPin size={12} /> Left {lastCity}
+                  </div>
+               </div>
+           );
+       }
+       timelineElements.push(
+           <div key={`arr-${index}`} className="relative flex justify-center py-2 z-10 animate-in fade-in zoom-in duration-300">
+              <div className="bg-indigo-100 text-indigo-800 text-[10px] uppercase tracking-wider font-bold px-3 py-1 rounded-full flex items-center gap-1.5 shadow-sm border border-indigo-200">
+                 <Building size={12} /> Checked into {item.city}
+              </div>
+           </div>
+       );
+       lastCity = item.city;
+    }
+
+    timelineElements.push(
+      <TripItemCard key={item.id} item={item} date={date} onEdit={onEdit} onDelete={onDelete} />
+    );
+  });
 
   return (
     <div className="animate-in slide-in-from-right-4 duration-300">
@@ -778,15 +697,6 @@ function DayView({ date, items, currentLocations, recommendations, onDelete, onT
       <div className="p-4 sm:p-6 relative z-0">
         <div className="absolute left-[36px] top-6 bottom-0 w-0.5 bg-slate-200 -z-10"></div>
 
-        <div className="flex items-center gap-3 mb-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
-           <div className="w-8 h-8 rounded-full bg-slate-800 text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0">
-              <MapPin size={14} />
-           </div>
-           <span className="font-black text-slate-800 uppercase tracking-widest text-sm bg-white px-3 py-1.5 rounded-lg shadow-sm border border-slate-100">
-              {primaryCity || 'Your Ideas'}
-           </span>
-        </div>
-
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center pt-16 text-center text-slate-400">
             <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-4"><CalendarIcon size={32} className="text-slate-300" /></div>
@@ -795,48 +705,35 @@ function DayView({ date, items, currentLocations, recommendations, onDelete, onT
         ) : (
           <div className="space-y-6">
             <div className="absolute left-[36px] top-10 bottom-10 w-0.5 bg-slate-200 -z-10"></div>
-            {timelineNodes}
+            {timelineElements}
           </div>
         )}
 
-        {/* Dynamic Location-Based Checklists */}
-        {localizedIdeas.map(([city, ideas]) => (
-          <div key={city} className="mt-10 pt-8 border-t-2 border-dashed border-slate-200">
-            <h3 className="font-black text-lg text-slate-800 mb-4 flex items-center gap-2">
-              <Lightbulb className="text-amber-500" /> 
-              Things to do in {city}
-            </h3>
-            <div className="space-y-3">
-              {ideas.map(item => (
-                <RecommendationCard 
-                  key={item.id} 
-                  item={item} 
-                  onToggle={onToggleIdea} 
-                  onEdit={onEdit} 
-                  onDelete={onDelete} 
-                />
-              ))}
-            </div>
-          </div>
-        ))}
-        
-        {globalIdeas.length > 0 && (
+        {recommendations && recommendations.length > 0 && (
           <div className="mt-10 pt-8 border-t-2 border-dashed border-slate-200">
-            <h3 className="font-black text-lg text-slate-800 mb-4 flex items-center gap-2">
+            <h3 className="font-black text-lg text-slate-800 mb-6 flex items-center gap-2">
               <Lightbulb className="text-amber-500" /> 
-              General Trip Ideas
+              {currentCities.length > 0 ? `Ideas for this location` : 'General Trip Ideas'}
             </h3>
-            <div className="space-y-3">
-              {globalIdeas.map(item => (
-                <RecommendationCard 
-                  key={item.id} 
-                  item={item} 
-                  onToggle={onToggleIdea} 
-                  onEdit={onEdit} 
-                  onDelete={onDelete} 
-                />
-              ))}
-            </div>
+            
+            {/* Categorized rendering for Ideas */}
+            {Object.entries(groupedRecommendations).map(([type, ideas]) => {
+               const config = SUB_TYPES.recommendation[type] || SUB_TYPES.recommendation.other;
+               const TypeIcon = config.icon;
+               return (
+                  <div key={type} className="mb-6">
+                     <h4 className="font-bold text-slate-700 flex items-center gap-2 mb-3 text-sm uppercase tracking-wider bg-slate-100 px-3 py-1.5 rounded-lg w-fit">
+                        <TypeIcon size={16} className="text-amber-600" />
+                        {config.label}
+                     </h4>
+                     <div className="space-y-3">
+                       {ideas.map(item => (
+                         <RecommendationCard key={item.id} item={item} onToggle={onToggleIdea} onEdit={onEdit} onDelete={onDelete} />
+                       ))}
+                     </div>
+                  </div>
+               );
+            })}
           </div>
         )}
       </div>
@@ -910,9 +807,9 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
          {!isExpanded && (
            <div className="flex flex-col gap-1 text-xs text-slate-500 mt-2">
               {item.category === 'transport' ? (
-                 (item.depCity || item.departureCity) && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.depCity || item.departureCity} {(item.arrCity || item.arrivalCity) && `→ ${item.arrCity || item.arrivalCity}`}</span>
+                 item.depCity && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.depCity} {item.arrCity && `→ ${item.arrCity}`}</span>
               ) : (
-                 (item.city || item.locationCity) && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
+                 item.city && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.city} {item.country && `, ${item.country}`}</span>
               )}
            </div>
          )}
@@ -934,28 +831,28 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
                        <MapPin size={16} className="flex-shrink-0 mt-0.5 text-blue-500" />
                        <div>
                          <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Departure</span> 
-                         <span className="font-semibold">{item.depCity || item.departureCity} {(item.depCountry || item.departureCountry) && `, ${item.depCountry || item.departureCountry}`}</span>
+                         <span className="font-semibold">{item.depCity} {item.depCountry && `, ${item.depCountry}`}</span>
                          {item.depTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.depTerminal}</span>}
                        </div>
                     </div>
-                    {(item.arrCity || item.arrivalCity) && (
+                    {item.arrCity && (
                        <div className="flex items-start gap-2 text-slate-700 mt-1 pt-2 border-t border-slate-200/50">
                           <MapPin size={16} className="flex-shrink-0 mt-0.5 text-emerald-500" />
                           <div>
                             <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Arrival</span> 
-                            <span className="font-semibold">{item.arrCity || item.arrivalCity} {(item.arrCountry || item.arrivalCountry) && `, ${item.arrCountry || item.arrivalCountry}`}</span>
+                            <span className="font-semibold">{item.arrCity} {item.arrCountry && `, ${item.arrCountry}`}</span>
                             {item.arrTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.arrTerminal}</span>}
                           </div>
                        </div>
                     )}
                  </div>
-              ) : (item.city || item.locationCity || item.location || item.locationLocal) ? (
+              ) : (item.city || item.location || item.locationLocal) ? (
                 <div className="mt-1 flex flex-col gap-2">
-                  {(item.city || item.locationCity) && (
+                  {item.city && (
                     <div className="inline-flex items-start gap-1.5 text-sm text-slate-700">
                       <MapPin size={14} className="mt-0.5 flex-shrink-0 text-indigo-400" />
                       <div>
-                        <span className="font-semibold block">{item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
+                        <span className="font-semibold block">{item.city} {item.country && `, ${item.country}`}</span>
                         {item.location && (
                            <a href={mapUrl} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} className="text-blue-500 hover:text-blue-700 block mt-0.5 text-xs underline decoration-blue-200 underline-offset-2">{item.location}</a>
                         )}
@@ -972,9 +869,9 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
 
               {item.url && (
                 <div className="mt-1">
-                  <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-slate-900 transition-colors">
-                    <LinkIcon size={14} className="text-slate-400" />
-                    <span className="truncate max-w-[200px] underline decoration-slate-200 underline-offset-2">{item.url.replace(/^https?:\/\//, '')}</span>
+                  <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-slate-600 hover:text-blue-700 transition-colors">
+                    <LinkIcon size={14} className="text-blue-400" />
+                    <span className="underline decoration-slate-200 underline-offset-2 font-medium">Website</span>
                   </a>
                 </div>
               )}
@@ -1005,7 +902,6 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
 function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const subConfig = SUB_TYPES.recommendation[item.subType] || SUB_TYPES.recommendation.other;
-  const TypeIcon = subConfig.icon;
 
   return (
     <div className={`border-2 p-4 rounded-xl shadow-sm transition-all duration-200 cursor-pointer relative overflow-hidden group ${item.isCompleted ? 'bg-slate-50 border-slate-200 opacity-70' : 'bg-white border-amber-200 hover:border-amber-300'}`} onClick={() => setIsExpanded(!isExpanded)}>
@@ -1016,9 +912,7 @@ function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
          
          <div className="flex-1">
             <div className="flex justify-between items-start mb-1">
-              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-600 bg-amber-50 px-2 py-0.5 rounded-md">
-                 <TypeIcon size={12} /> {subConfig.label}
-              </div>
+              <h3 className={`font-bold text-lg leading-tight ${item.isCompleted ? 'line-through text-slate-500' : 'text-slate-800'}`}>{item.title}</h3>
               {isExpanded && (
                 <div className="flex gap-2" onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => onEdit(item)} className="text-slate-400 hover:text-blue-600 transition-colors"><Edit2 size={14} /></button>
@@ -1027,18 +921,16 @@ function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
               )}
             </div>
             
-            <h3 className={`font-bold text-lg leading-tight ${item.isCompleted ? 'line-through text-slate-500' : 'text-slate-800'}`}>{item.title}</h3>
-            
             {!isExpanded && item.notes && <p className="text-xs text-slate-500 line-clamp-1 mt-1">{item.notes}</p>}
 
             {isExpanded && (
               <div className="mt-3 space-y-3 pt-3 border-t border-slate-100 animate-in fade-in duration-200">
-                {(item.city || item.locationCity || item.location) ? (
+                {(item.city || item.location) ? (
                   <div className="flex flex-col gap-1.5 text-sm">
                     <div className="flex items-start gap-1.5 text-slate-700">
                        <MapPin size={14} className="mt-0.5 flex-shrink-0 text-amber-500" />
                        <div>
-                         <span className="font-semibold">{item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
+                         <span className="font-semibold">{item.city} {item.country && `, ${item.country}`}</span>
                          {item.location && <span className="block text-xs text-slate-500 mt-0.5">{item.location}</span>}
                        </div>
                     </div>
@@ -1048,8 +940,8 @@ function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
                 
                 {item.url && (
                   <div>
-                    <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors">
-                      <LinkIcon size={14} /> <span className="underline decoration-blue-200 underline-offset-2">Visit Website</span>
+                    <a href={item.url.startsWith('http') ? item.url : `https://${item.url}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:text-blue-800 transition-colors font-medium">
+                      <LinkIcon size={14} /> <span className="underline decoration-blue-200 underline-offset-2">Website</span>
                     </a>
                   </div>
                 )}
@@ -1215,7 +1107,7 @@ function AddTripForm({ onClose, onSave, initialData }) {
   );
 }
 
-function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialData }) {
+function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialData, defaultCity, defaultCountry }) {
   const [category, setCategory] = useState(initialData?.category || 'transport');
   const [error, setError] = useState('');
   const [selectedFile, setSelectedFile] = useState(null);
@@ -1238,8 +1130,8 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
     arrCity: initialData?.arrCity || '',
     arrCountry: initialData?.arrCountry || '',
     arrTerminal: initialData?.arrTerminal || '',
-    city: initialData?.city || '',
-    country: initialData?.country || '',
+    city: initialData?.city || (!initialData ? defaultCity : ''),
+    country: initialData?.country || (!initialData ? defaultCountry : ''),
     url: initialData?.url || '', 
     cost: initialData?.cost || '', 
     currency: initialData?.currency || 'AUD', 
@@ -1359,7 +1251,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
             </div>
 
             <div className="space-y-4">
-              {/* IDEAS SECTION */}
               {category === 'recommendation' && (
                 <div className="grid grid-cols-2 gap-4 bg-amber-50/50 p-4 rounded-xl border border-amber-100">
                   <div className="col-span-2 text-xs font-bold text-amber-800 uppercase tracking-wider -mb-1">Target City <span className="text-red-500">*</span></div>
@@ -1367,12 +1258,11 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                     <input type="text" name="city" required value={formData.city || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                   <div>
-                    <input type="text" name="country" required value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    <input type="text" name="country" value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                 </div>
               )}
 
-              {/* NON-TRANSPORT TITLE */}
               {category !== 'transport' && (
                 <div>
                   <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">
@@ -1382,7 +1272,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                 </div>
               )}
 
-              {/* ACCOMMODATION / ACTIVITY CITY */}
               {(category === 'accommodation' || category === 'activity') && (
                 <div className="grid grid-cols-2 gap-4 bg-indigo-50/50 p-4 rounded-xl border border-indigo-100">
                   <div className="col-span-2 text-xs font-bold text-indigo-800 uppercase tracking-wider -mb-1">Location <span className="text-red-500">*</span></div>
@@ -1390,12 +1279,11 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                     <input type="text" name="city" required value={formData.city || ''} onChange={handleChange} placeholder="City" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                   <div>
-                    <input type="text" name="country" required value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
+                    <input type="text" name="country" value={formData.country || ''} onChange={handleChange} placeholder="Country" className="w-full px-4 py-3 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500" />
                   </div>
                 </div>
               )}
 
-              {/* TRANSPORT FIELDS */}
               {category === 'transport' && (
                 <>
                   <div className="grid grid-cols-2 gap-4">
@@ -1435,7 +1323,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                 </>
               )}
 
-              {/* DATES & TIMES */}
               {category !== 'recommendation' && (
                 <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
                   <div className="col-span-2">
@@ -1464,7 +1351,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                 </div>
               )}
 
-              {/* ADDRESS FIELDS */}
               {category !== 'transport' && (
                 <div className="space-y-4">
                   <div>
