@@ -36,7 +36,6 @@ try {
   db = getFirestore(app);
   storage = getStorage(app);
   
-  // Enable offline mode
   enableIndexedDbPersistence(db).catch((err) => {
     console.warn("Offline persistence notice:", err.code);
   });
@@ -119,7 +118,6 @@ export default function App() {
   const [editingItem, setEditingItem] = useState(null);
   const [confirmModal, setConfirmModal] = useState({ isOpen: false, title: '', message: '', onConfirm: null });
 
-  // Auth Listener
   useEffect(() => {
     if (!auth) {
       setIsAuthLoading(false);
@@ -132,7 +130,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Fetch Trips
   useEffect(() => {
     if (!user || !db) return;
     const tripsRef = collection(db, 'artifacts', appId, 'public', 'data', 'trips');
@@ -146,7 +143,6 @@ export default function App() {
 
   const activeTrip = trips.find(t => t.id === activeTripId);
 
-  // Bulletproof filter for chronological sorting
   const itemsForSelectedDate = useMemo(() => {
     if (!activeTrip || !selectedDate) return [];
     return activeTrip.items
@@ -164,7 +160,7 @@ export default function App() {
            const end = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
            if (start === date) return item.time || '00:00';
            if (end === date && start !== end) return item.endTime || '23:59';
-           return '00:00'; // Carry-overs pin to the top of the day
+           return '00:00'; 
         };
         
         const timeA = getSortTime(a, selectedDate);
@@ -174,72 +170,125 @@ export default function App() {
       });
   }, [activeTrip, selectedDate]);
 
-  // Determine current cities to show relevant Ideas across days
-  const currentCities = useMemo(() => {
+  const currentLocations = useMemo(() => {
     if (!activeTrip || !selectedDate) return [];
-    let cities = new Set();
-    
-    // 1. Accommodations spanning over this date
+    const locations = new Map();
+
+    const normalize = (str) => str ? str.trim().toLowerCase() : '';
+
+    // 1. Direct explicit locations active on this specific date
     activeTrip.items.forEach(i => {
-      if (i.category === 'accommodation' && i.city) {
-        const start = i.date;
-        const end = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+      const start = i.date;
+      const end = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+      
+      // Accommodations spanning this date
+      if (i.category === 'accommodation' && (i.city || i.locationCity)) {
         if (selectedDate >= start && selectedDate <= end) {
-          cities.add(i.city.trim().toLowerCase());
+          const c = i.city || i.locationCity;
+          const country = i.country || i.locationCountry || '';
+          locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
         }
       }
-    });
 
-    // 2. Activities on this date
-    activeTrip.items.forEach(i => {
-      if (i.category === 'activity' && i.city && i.date === selectedDate) {
-        cities.add(i.city.trim().toLowerCase());
+      // Activities specifically on this date
+      if (i.category === 'activity' && (i.city || i.locationCity) && start === selectedDate) {
+        const c = i.city || i.locationCity;
+        const country = i.country || i.locationCountry || '';
+        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
+      }
+
+      // Transport departing on this date
+      if (i.category === 'transport' && (i.depCity || i.departureCity) && start === selectedDate) {
+        const c = i.depCity || i.departureCity;
+        const country = i.depCountry || i.departureCountry || '';
+        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
+      }
+
+      // Transport arriving on this date
+      if (i.category === 'transport' && (i.arrCity || i.arrivalCity) && end === selectedDate) {
+        const c = i.arrCity || i.arrivalCity;
+        const country = i.arrCountry || i.arrivalCountry || '';
+        locations.set(normalize(c), { city: normalize(c), country: normalize(country), displayCity: c });
       }
     });
 
-    // 3. Transport arriving before or on this date
-    const pastTransports = activeTrip.items
-      .filter(i => i.category === 'transport' && i.arrCity)
-      .filter(i => {
-         const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
-         return d <= selectedDate;
-      })
-      .sort((a,b) => {
-        const aDate = (a.endDate && a.endDate.trim() !== '') ? a.endDate : a.date;
-        const bDate = (b.endDate && b.endDate.trim() !== '') ? b.endDate : b.date;
-        return aDate.localeCompare(bDate);
+    // 2. If NO strong explicit locations are found for today, figure out where we last were!
+    if (locations.size === 0) {
+      const pastLocationEvents = [];
+      activeTrip.items.forEach(i => {
+         // Past Transport Arrivals
+         if (i.category === 'transport' && (i.arrCity || i.arrivalCity)) {
+           const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+           if (d <= selectedDate) {
+              pastLocationEvents.push({ 
+                date: d, 
+                time: i.endTime || i.time || '00:00', 
+                city: i.arrCity || i.arrivalCity, 
+                country: i.arrCountry || i.arrivalCountry 
+              });
+           }
+         }
+         // Past Accommodations that have ended
+         if (i.category === 'accommodation' && (i.city || i.locationCity)) {
+           const d = (i.endDate && i.endDate.trim() !== '') ? i.endDate : i.date;
+           if (d <= selectedDate) {
+              pastLocationEvents.push({ 
+                date: d, 
+                time: i.endTime || '00:00', 
+                city: i.city || i.locationCity, 
+                country: i.country || i.locationCountry 
+              });
+           }
+         }
       });
-    
-    if (pastTransports.length > 0) {
-      cities.add(pastTransports[pastTransports.length - 1].arrCity.trim().toLowerCase());
+
+      // Sort chronologically to find the absolute latest place we were
+      pastLocationEvents.sort((a,b) => {
+         if (a.date === b.date) return a.time.localeCompare(b.time);
+         return a.date.localeCompare(b.date);
+      });
+
+      if (pastLocationEvents.length > 0) {
+         const latest = pastLocationEvents[pastLocationEvents.length - 1];
+         locations.set(normalize(latest.city), { 
+           city: normalize(latest.city), 
+           country: normalize(latest.country), 
+           displayCity: latest.city 
+         });
+      }
     }
 
-    // 4. Transport departing on this date
-    activeTrip.items.forEach(i => {
-      if (i.category === 'transport' && i.depCity && i.date === selectedDate) {
-        cities.add(i.depCity.trim().toLowerCase());
-      }
-    });
-
-    return Array.from(cities);
+    return Array.from(locations.values());
   }, [activeTrip, selectedDate]);
 
-  // Filter recommendations based on current cities
   const recommendationsForToday = useMemo(() => {
     if (!activeTrip) return [];
     const ideas = activeTrip.items.filter(i => i.category === 'recommendation');
     
-    if (currentCities.length === 0) {
-      return ideas; // Fallback: Show all ideas safely if we don't know where the user is
+    if (currentLocations.length === 0) {
+      // Fallback: If we don't know where the user is, only show TRUE global ideas
+      return ideas.filter(idea => {
+        const c = idea.city || idea.locationCity;
+        return !c || c.trim() === '';
+      });
     }
 
     return ideas.filter(idea => {
-      if (!idea.city) return true;
-      const ideaCity = idea.city.trim().toLowerCase();
-      // Loose matching allows "Tokyo" to match "Tokyo, Japan"
-      return currentCities.some(cc => cc.includes(ideaCity) || ideaCity.includes(cc));
+      const rawCity = idea.city || idea.locationCity;
+      const rawCountry = idea.country || idea.locationCountry;
+      
+      if (!rawCity || rawCity.trim() === '') return true; // Always show global ideas
+      
+      const ideaCity = rawCity.trim().toLowerCase();
+      const ideaCountry = rawCountry ? rawCountry.trim().toLowerCase() : '';
+      
+      return currentLocations.some(loc => {
+        const cityMatch = loc.city.includes(ideaCity) || ideaCity.includes(loc.city);
+        const countryMatch = (!ideaCountry || !loc.country) ? true : (loc.country.includes(ideaCountry) || ideaCountry.includes(loc.country));
+        return cityMatch && countryMatch;
+      });
     });
-  }, [activeTrip, currentCities]);
+  }, [activeTrip, currentLocations]);
 
   const budgetSummary = useMemo(() => {
     if (!activeTrip) return {};
@@ -341,7 +390,6 @@ export default function App() {
     <div className="min-h-screen bg-slate-100 flex justify-center font-sans text-slate-800">
       <div className="w-full max-w-xl bg-white shadow-2xl flex flex-col relative overflow-hidden sm:border-x sm:border-slate-200">
         
-        {/* Header */}
         <div className="bg-slate-900 text-white px-6 pt-12 pb-6 rounded-b-3xl shadow-md z-10 transition-all duration-300">
           {!activeTrip ? (
             <div className="flex justify-between items-start">
@@ -389,7 +437,6 @@ export default function App() {
           )}
         </div>
 
-        {/* Content Area */}
         <div className="flex-1 overflow-y-auto pb-24 relative print:overflow-visible print:pb-0">
           {!activeTrip && (
             <div className="p-6 space-y-4 animate-in fade-in duration-300">
@@ -429,7 +476,7 @@ export default function App() {
                 <DayView 
                   date={selectedDate} 
                   items={itemsForSelectedDate} 
-                  currentCities={currentCities}
+                  currentLocations={currentLocations}
                   recommendations={recommendationsForToday}
                   onDelete={requestDeleteItem}
                   onToggleIdea={handleToggleIdea}
@@ -578,7 +625,7 @@ function CalendarView({ trip, onSelectDate }) {
   );
 }
 
-function DayView({ date, items, currentCities, recommendations, onDelete, onToggleIdea, onEdit, tripStart, tripEnd, onDateChange }) {
+function DayView({ date, items, currentLocations, recommendations, onDelete, onToggleIdea, onEdit, tripStart, tripEnd, onDateChange }) {
   const handlePrevDay = () => {
     const d = new Date(date);
     d.setUTCDate(d.getUTCDate() - 1);
@@ -596,9 +643,123 @@ function DayView({ date, items, currentCities, recommendations, onDelete, onTogg
   const isFirstDay = date <= tripStart;
   const isLastDay = date >= tripEnd;
   
-  const primaryCity = currentCities.length > 0 
-    ? currentCities[0].split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+  const primaryCity = currentLocations.length > 0 
+    ? currentLocations[0].displayCity
     : '';
+
+  // Timeline tracking to inject Location Change badges
+  let runningCity = primaryCity;
+  const timelineNodes = [];
+
+  items.forEach((item) => {
+    timelineNodes.push(
+      <TripItemCard 
+        key={item.id} 
+        item={item} 
+        date={date} 
+        onEdit={onEdit} 
+        onDelete={onDelete} 
+      />
+    );
+
+    let newCity = null;
+    let newCountry = '';
+    let badgeAction = '';
+    let badgeColor = '';
+    let textColor = '';
+    let bgColor = '';
+    let borderColor = '';
+
+    if (item.category === 'transport') {
+      const arrCity = item.arrCity || item.arrivalCity;
+      const arrCountry = item.arrCountry || item.arrivalCountry;
+      const endD = (item.endDate && item.endDate.trim() !== '') ? item.endDate : item.date;
+      
+      if (arrCity && endD === date) {
+        newCity = arrCity;
+        newCountry = arrCountry;
+        badgeAction = 'Arrived in';
+        badgeColor = 'bg-emerald-500';
+        textColor = 'text-emerald-900';
+        bgColor = 'bg-emerald-50';
+        borderColor = 'border-emerald-100';
+      }
+    } 
+    else if (item.category === 'accommodation') {
+      const acity = item.city || item.locationCity;
+      const acountry = item.country || item.locationCountry;
+      if (acity && item.date === date) {
+         newCity = acity;
+         newCountry = acountry;
+         badgeAction = 'Checked into';
+         badgeColor = 'bg-indigo-500';
+         textColor = 'text-indigo-900';
+         bgColor = 'bg-indigo-50';
+         borderColor = 'border-indigo-100';
+      }
+    }
+
+    if (newCity && newCity.trim().toLowerCase() !== runningCity.trim().toLowerCase()) {
+      
+      // 1. Check out of / Leave previous city if it exists
+      if (runningCity && runningCity.trim() !== '') {
+        timelineNodes.push(
+          <div key={`loc-out-${item.id}`} className="flex items-center gap-3 my-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
+            <div className="w-8 h-8 rounded-full bg-slate-400 text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0">
+              <MapPin size={14} />
+            </div>
+            <span className="font-bold text-slate-700 text-sm bg-slate-100 px-3 py-1.5 rounded-lg shadow-sm border border-slate-200">
+              Left {runningCity}
+            </span>
+          </div>
+        );
+      }
+
+      // 2. Check into / Arrive in new city
+      timelineNodes.push(
+        <div key={`loc-in-${item.id}`} className="flex items-center gap-3 my-6 relative z-10 -ml-1 animate-in fade-in zoom-in duration-500">
+          <div className={`w-8 h-8 rounded-full ${badgeColor} text-white flex items-center justify-center border-[3px] border-slate-100 shadow-md flex-shrink-0`}>
+            <MapPin size={14} />
+          </div>
+          <span className={`font-bold ${textColor} text-sm ${bgColor} px-3 py-1.5 rounded-lg shadow-sm border ${borderColor}`}>
+            {badgeAction} {newCity}{newCountry ? `, ${newCountry}` : ''}
+          </span>
+        </div>
+      );
+      
+      runningCity = newCity;
+    }
+  });
+
+  // Group recommendations by multiple distinct cities
+  const globalIdeas = [];
+  const localizedIdeasMap = new Map();
+
+  if (recommendations && recommendations.length > 0) {
+    recommendations.forEach(r => {
+       const rCity = (r.city || r.locationCity || '').trim();
+       if (!rCity) {
+          globalIdeas.push(r); // Blank cities are global ideas
+       } else {
+          // Find which active city this idea belongs to
+          const matchedLoc = currentLocations.find(loc => 
+             loc.city.includes(rCity.toLowerCase()) || rCity.toLowerCase().includes(loc.city)
+          );
+          
+          if (matchedLoc) {
+             if (!localizedIdeasMap.has(matchedLoc.displayCity)) {
+                localizedIdeasMap.set(matchedLoc.displayCity, []);
+             }
+             localizedIdeasMap.get(matchedLoc.displayCity).push(r);
+          } else {
+             // Fallback just in case
+             globalIdeas.push(r);
+          }
+       }
+    });
+  }
+  
+  const localizedIdeas = Array.from(localizedIdeasMap.entries());
 
   return (
     <div className="animate-in slide-in-from-right-4 duration-300">
@@ -634,26 +795,39 @@ function DayView({ date, items, currentCities, recommendations, onDelete, onTogg
         ) : (
           <div className="space-y-6">
             <div className="absolute left-[36px] top-10 bottom-10 w-0.5 bg-slate-200 -z-10"></div>
-            {items.map((item) => (
-              <TripItemCard 
-                key={item.id} 
-                item={item} 
-                date={date} 
-                onEdit={onEdit} 
-                onDelete={onDelete} 
-              />
-            ))}
+            {timelineNodes}
           </div>
         )}
 
-        {recommendations && recommendations.length > 0 && (
+        {/* Dynamic Location-Based Checklists */}
+        {localizedIdeas.map(([city, ideas]) => (
+          <div key={city} className="mt-10 pt-8 border-t-2 border-dashed border-slate-200">
+            <h3 className="font-black text-lg text-slate-800 mb-4 flex items-center gap-2">
+              <Lightbulb className="text-amber-500" /> 
+              Things to do in {city}
+            </h3>
+            <div className="space-y-3">
+              {ideas.map(item => (
+                <RecommendationCard 
+                  key={item.id} 
+                  item={item} 
+                  onToggle={onToggleIdea} 
+                  onEdit={onEdit} 
+                  onDelete={onDelete} 
+                />
+              ))}
+            </div>
+          </div>
+        ))}
+        
+        {globalIdeas.length > 0 && (
           <div className="mt-10 pt-8 border-t-2 border-dashed border-slate-200">
             <h3 className="font-black text-lg text-slate-800 mb-4 flex items-center gap-2">
               <Lightbulb className="text-amber-500" /> 
-              {primaryCity ? `Things to do in ${primaryCity}` : 'Ideas for this trip'}
+              General Trip Ideas
             </h3>
             <div className="space-y-3">
-              {recommendations.map(item => (
+              {globalIdeas.map(item => (
                 <RecommendationCard 
                   key={item.id} 
                   item={item} 
@@ -736,9 +910,9 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
          {!isExpanded && (
            <div className="flex flex-col gap-1 text-xs text-slate-500 mt-2">
               {item.category === 'transport' ? (
-                 item.depCity && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.depCity} {item.arrCity && `→ ${item.arrCity}`}</span>
+                 (item.depCity || item.departureCity) && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.depCity || item.departureCity} {(item.arrCity || item.arrivalCity) && `→ ${item.arrCity || item.arrivalCity}`}</span>
               ) : (
-                 item.city && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.city} {item.country && `, ${item.country}`}</span>
+                 (item.city || item.locationCity) && <span className="flex items-center gap-1.5"><MapPin size={12}/> {item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
               )}
            </div>
          )}
@@ -760,28 +934,28 @@ function TripItemCard({ item, date, onEdit, onDelete }) {
                        <MapPin size={16} className="flex-shrink-0 mt-0.5 text-blue-500" />
                        <div>
                          <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Departure</span> 
-                         <span className="font-semibold">{item.depCity} {item.depCountry && `, ${item.depCountry}`}</span>
+                         <span className="font-semibold">{item.depCity || item.departureCity} {(item.depCountry || item.departureCountry) && `, ${item.depCountry || item.departureCountry}`}</span>
                          {item.depTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.depTerminal}</span>}
                        </div>
                     </div>
-                    {item.arrCity && (
+                    {(item.arrCity || item.arrivalCity) && (
                        <div className="flex items-start gap-2 text-slate-700 mt-1 pt-2 border-t border-slate-200/50">
                           <MapPin size={16} className="flex-shrink-0 mt-0.5 text-emerald-500" />
                           <div>
                             <span className="font-bold text-slate-500 uppercase tracking-wider text-[10px] block">Arrival</span> 
-                            <span className="font-semibold">{item.arrCity} {item.arrCountry && `, ${item.arrCountry}`}</span>
+                            <span className="font-semibold">{item.arrCity || item.arrivalCity} {(item.arrCountry || item.arrivalCountry) && `, ${item.arrCountry || item.arrivalCountry}`}</span>
                             {item.arrTerminal && <span className="block text-xs text-slate-500 mt-0.5">{item.arrTerminal}</span>}
                           </div>
                        </div>
                     )}
                  </div>
-              ) : (item.city || item.location || item.locationLocal) ? (
+              ) : (item.city || item.locationCity || item.location || item.locationLocal) ? (
                 <div className="mt-1 flex flex-col gap-2">
-                  {item.city && (
+                  {(item.city || item.locationCity) && (
                     <div className="inline-flex items-start gap-1.5 text-sm text-slate-700">
                       <MapPin size={14} className="mt-0.5 flex-shrink-0 text-indigo-400" />
                       <div>
-                        <span className="font-semibold block">{item.city} {item.country && `, ${item.country}`}</span>
+                        <span className="font-semibold block">{item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
                         {item.location && (
                            <a href={mapUrl} target="_blank" rel="noopener noreferrer" onClick={e=>e.stopPropagation()} className="text-blue-500 hover:text-blue-700 block mt-0.5 text-xs underline decoration-blue-200 underline-offset-2">{item.location}</a>
                         )}
@@ -859,12 +1033,12 @@ function RecommendationCard({ item, onToggle, onEdit, onDelete }) {
 
             {isExpanded && (
               <div className="mt-3 space-y-3 pt-3 border-t border-slate-100 animate-in fade-in duration-200">
-                {(item.city || item.location) ? (
+                {(item.city || item.locationCity || item.location) ? (
                   <div className="flex flex-col gap-1.5 text-sm">
                     <div className="flex items-start gap-1.5 text-slate-700">
                        <MapPin size={14} className="mt-0.5 flex-shrink-0 text-amber-500" />
                        <div>
-                         <span className="font-semibold">{item.city} {item.country && `, ${item.country}`}</span>
+                         <span className="font-semibold">{item.city || item.locationCity} {(item.country || item.locationCountry) && `, ${item.country || item.locationCountry}`}</span>
                          {item.location && <span className="block text-xs text-slate-500 mt-0.5">{item.location}</span>}
                        </div>
                     </div>
@@ -1052,7 +1226,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
     title: initialData?.title || '', 
     date: initialData?.date || defaultDate || minDate, 
     time: initialData?.time || '10:00',
-    // Ultra-safe fallback for older items missing an end date
     endDate: initialData?.endDate || initialData?.date || defaultDate || minDate, 
     endTime: initialData?.endTime || '', 
     identifier: initialData?.identifier || '', 
@@ -1085,7 +1258,6 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
     const { name, value, type, checked } = e.target;
     setFormData(prev => {
        const updates = { [name]: type === 'checkbox' ? checked : value };
-       // Smart logic: Push the end date forward if user moves start date past it
        if (name === 'date' && prev.endDate && value > prev.endDate) {
           updates.endDate = value;
        }
@@ -1263,7 +1435,7 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
                 </>
               )}
 
-              {/* DATES & TIMES (HIDDEN FOR RECOMMENDATIONS) */}
+              {/* DATES & TIMES */}
               {category !== 'recommendation' && (
                 <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
                   <div className="col-span-2">
