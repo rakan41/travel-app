@@ -16,7 +16,7 @@ import {
   X, ChevronLeft, ChevronRight, Clock, Globe2, CalendarDays, ExternalLink, 
   Link as LinkIcon, Share2, UserPlus, AlertCircle, Edit2, LogOut, CheckSquare, 
   Printer, Lightbulb, Utensils, Wine, Landmark, Ticket,
-  Paperclip, UploadCloud, Loader2, Coffee
+  Paperclip, UploadCloud, Loader2, Coffee, Copy
 } from 'lucide-react';
 
 const firebaseConfig = {
@@ -145,7 +145,43 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Auto-Join from URL Link
+  useEffect(() => {
+    const processUrlJoin = async () => {
+      if (!user || !db) return;
+      const params = new URLSearchParams(window.location.search);
+      const joinId = params.get('join');
+      
+      if (joinId) {
+        try {
+          const tripRef = doc(db, 'artifacts', appId, 'public', 'data', 'trips', joinId);
+          const snap = await getDoc(tripRef);
+          if (snap.exists()) {
+            const data = snap.data();
+            // Add user to shared list if they aren't the owner and aren't already in the list
+            if (data.ownerId !== user.uid && (!data.sharedWith || !data.sharedWith.includes(user.uid))) {
+              await updateDoc(tripRef, { sharedWith: [...(data.sharedWith || []), user.uid] });
+            }
+            // Open the trip immediately
+            setActiveTripId(joinId);
+            setSelectedDate(data.startDate);
+            setActiveTab('calendar');
+          }
+        } catch (e) {
+          console.error("Error auto-joining:", e);
+        }
+        // Clean up the URL so refreshing the page doesn't run this again
+        window.history.replaceState({}, document.title, window.location.pathname);
+      }
+    };
+    
+    processUrlJoin();
+  }, [user, db]);
+
   const activeTrip = trips.find(t => t.id === activeTripId);
+
+  const ownedTrips = trips.filter(t => t.ownerId === user?.uid);
+  const sharedTrips = trips.filter(t => t.ownerId !== user?.uid);
 
   // Bulletproof filter for chronological sorting
   const itemsForSelectedDate = useMemo(() => {
@@ -295,13 +331,57 @@ export default function App() {
 
   const requestDeleteTrip = (id, e) => {
     e.stopPropagation();
+    const trip = trips.find(t => t.id === id);
+    const isOwner = trip.ownerId === user.uid;
+    
     setConfirmModal({
       isOpen: true,
-      title: "Delete Trip?",
-      message: "Are you sure you want to delete this trip entirely? This affects everyone sharing it.",
+      title: isOwner ? "Delete Trip?" : "Leave Trip?",
+      message: isOwner ? "Are you sure you want to delete this trip entirely? This affects everyone sharing it." : "Are you sure you want to remove this shared trip from your dashboard?",
       onConfirm: async () => {
-        await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', id));
+        if (isOwner) {
+          await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', id));
+        } else {
+          const newSharedWith = trip.sharedWith.filter(uid => uid !== user.uid);
+          await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'trips', id), { sharedWith: newSharedWith });
+        }
         if (activeTripId === id) setActiveTripId(null);
+        setConfirmModal({ isOpen: false });
+      }
+    });
+  };
+
+  const requestDuplicateTrip = (id, e) => {
+    e.stopPropagation();
+    const tripToCopy = trips.find(t => t.id === id);
+    if (!tripToCopy || !user) return;
+    
+    setConfirmModal({
+      isOpen: true,
+      title: "Duplicate Trip?",
+      message: `Create a copy of "${tripToCopy.name}"?`,
+      onConfirm: async () => {
+        // Generate new unique IDs for all nested items to prevent data collisions
+        const newItems = (tripToCopy.items || []).map(item => ({
+          ...item,
+          id: Date.now().toString() + Math.random().toString(36).substring(2, 9)
+        }));
+        const newChecklist = (tripToCopy.checklist || []).map(item => ({
+          ...item,
+          id: Date.now().toString() + Math.random().toString(36).substring(2, 9)
+        }));
+
+        const newTrip = {
+          ...tripToCopy,
+          name: `Copy of ${tripToCopy.name}`,
+          ownerId: user.uid,
+          sharedWith: [], // Remove guest access so the copy is private
+          items: newItems,
+          checklist: newChecklist
+        };
+        delete newTrip.id; // Ensure we don't accidentally write the old ID into the new document
+
+        await setDoc(doc(collection(db, 'artifacts', appId, 'public', 'data', 'trips')), newTrip);
         setConfirmModal({ isOpen: false });
       }
     });
@@ -372,7 +452,18 @@ export default function App() {
                 <h1 className="text-2xl font-bold tracking-tight flex items-center gap-2">
                   <Globe2 className="text-blue-400" /> My Trips
                 </h1>
-                <p className="text-slate-400 text-sm mt-1">Manage your upcoming adventures</p>
+                <div className="flex items-center gap-2 mt-1.5">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt="User profile" className="w-5 h-5 rounded-full border border-slate-700" />
+                  ) : (
+                    <div className="w-5 h-5 rounded-full bg-slate-800 flex items-center justify-center text-[10px] font-bold text-slate-400">
+                      {user.email ? user.email.charAt(0).toUpperCase() : 'G'}
+                    </div>
+                  )}
+                  <p className="text-slate-400 text-sm truncate max-w-[160px]" title={user.email}>
+                    {user.displayName || user.email || 'Guest Traveler'}
+                  </p>
+                </div>
               </div>
               <div className="flex gap-2">
                 <button onClick={() => setIsJoinModalOpen(true)} className="flex items-center gap-1 text-xs font-semibold bg-slate-800 px-3 py-1.5 rounded-full hover:bg-slate-700 transition-colors">
@@ -415,7 +506,7 @@ export default function App() {
         {/* Content Area */}
         <div className="flex-1 overflow-y-auto pb-24 relative print:overflow-visible print:pb-0">
           {!activeTrip && (
-            <div className="p-6 space-y-4 animate-in fade-in duration-300">
+            <div className="p-6 space-y-8 animate-in fade-in duration-300">
               {trips.length === 0 ? (
                 <div className="text-center py-12 px-4 text-slate-500">
                   <Globe2 size={48} className="mx-auto text-slate-300 mb-4" />
@@ -423,24 +514,67 @@ export default function App() {
                   <p className="text-sm mt-1">Create or join a trip to get started.</p>
                 </div>
               ) : (
-                trips.map(trip => (
-                  <div key={trip.id} onClick={() => { setActiveTripId(trip.id); setSelectedDate(trip.startDate); setActiveTab('calendar'); }} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer group relative">
-                    <button onClick={(e) => requestDeleteTrip(trip.id, e)} className="absolute top-4 right-4 text-slate-300 hover:text-red-500 transition-colors opacity-100 sm:opacity-0 group-hover:opacity-100">
-                      <Trash2 size={18} />
-                    </button>
-                    <div className="pr-8">
-                      <h3 className="text-lg font-bold truncate">{trip.name}</h3>
-                      <div className="flex items-center gap-4 mt-3 text-sm text-slate-500">
-                        <div className="flex items-center gap-1.5"><CalendarDays size={16} className="text-blue-500" /><span>{formatDate(trip.startDate)}</span></div>
-                      </div>
-                      {trip.sharedWith.length > 0 && (
-                        <div className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-blue-600 bg-blue-50 w-fit px-2 py-0.5 rounded-md">
-                          <Users size={12} /> Shared
+                <>
+                  {ownedTrips.length > 0 && (
+                    <div className="space-y-4">
+                      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                        <CalendarIcon size={16} /> Created by Me
+                      </h2>
+                      {ownedTrips.map(trip => (
+                        <div key={trip.id} onClick={() => { setActiveTripId(trip.id); setSelectedDate(trip.startDate); setActiveTab('calendar'); }} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer group relative">
+                          <div className="absolute top-3 right-3 flex items-center gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100">
+                            <button onClick={(e) => requestDuplicateTrip(trip.id, e)} className="p-1.5 text-slate-300 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-colors" title="Duplicate Trip">
+                              <Copy size={16} />
+                            </button>
+                            <button onClick={(e) => requestDeleteTrip(trip.id, e)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors" title="Delete Trip">
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                          <div className="pr-16">
+                            <h3 className="text-lg font-bold truncate">{trip.name}</h3>
+                            <div className="flex items-center gap-4 mt-3 text-sm text-slate-500">
+                              <div className="flex items-center gap-1.5"><CalendarDays size={16} className="text-blue-500" /><span>{formatDate(trip.startDate)}</span></div>
+                            </div>
+                            {trip.sharedWith && trip.sharedWith.length > 0 && (
+                              <div className="mt-3 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-blue-600 bg-blue-50 w-fit px-2 py-1 rounded-md">
+                                <Users size={14} /> Shared with {trip.sharedWith.length} {trip.sharedWith.length === 1 ? 'person' : 'people'}
+                              </div>
+                            )}
+                          </div>
                         </div>
-                      )}
+                      ))}
                     </div>
-                  </div>
-                ))
+                  )}
+
+                  {sharedTrips.length > 0 && (
+                    <div className="space-y-4">
+                      <h2 className="text-sm font-bold text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                        <Users size={16} /> Shared With Me
+                      </h2>
+                      {sharedTrips.map(trip => (
+                        <div key={trip.id} onClick={() => { setActiveTripId(trip.id); setSelectedDate(trip.startDate); setActiveTab('calendar'); }} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer group relative">
+                          <div className="absolute top-3 right-3 flex items-center gap-1 opacity-100 sm:opacity-0 group-hover:opacity-100">
+                            <button onClick={(e) => requestDuplicateTrip(trip.id, e)} className="p-1.5 text-slate-300 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-colors" title="Duplicate Trip">
+                              <Copy size={16} />
+                            </button>
+                            <button onClick={(e) => requestDeleteTrip(trip.id, e)} className="p-1.5 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors" title="Leave Trip">
+                              <LogOut size={16} />
+                            </button>
+                          </div>
+                          <div className="pr-16">
+                            <h3 className="text-lg font-bold truncate">{trip.name}</h3>
+                            <div className="flex items-center gap-4 mt-3 text-sm text-slate-500">
+                              <div className="flex items-center gap-1.5"><CalendarDays size={16} className="text-amber-500" /><span>{formatDate(trip.startDate)}</span></div>
+                            </div>
+                            <div className="mt-3 flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-50 border border-amber-100 w-fit px-2 py-1 rounded-md">
+                              <UserPlus size={14} /> Guest Access
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
@@ -1425,22 +1559,68 @@ function AddItemForm({ onClose, onSave, defaultDate, minDate, maxDate, initialDa
 
 function ShareModal({ trip, onClose }) {
   const [copied, setCopied] = useState(false);
+  
+  // Cleanly grab the current base URL, stripping out any existing URL parameters
+  const baseUrl = window.location.href.split('?')[0];
+  const shareLink = `${baseUrl}?join=${trip.id}`;
+
   const handleCopy = () => {
-    navigator.clipboard.writeText(trip.id).then(() => {
+    // Fallback for browsers/iframes that block the Clipboard API
+    const fallbackCopyTextToClipboard = (text) => {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      
+      // Avoid scrolling to bottom and make the box completely invisible
+      textArea.style.top = "0";
+      textArea.style.left = "0";
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0"; 
+
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+
+      try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        } else {
+            console.error('Fallback: Copying text command was unsuccessful');
+        }
+      } catch (err) {
+        console.error('Fallback: Oops, unable to copy', err);
+      }
+
+      document.body.removeChild(textArea);
+    };
+
+    if (!navigator.clipboard) {
+      fallbackCopyTextToClipboard(shareLink);
+      return;
+    }
+
+    navigator.clipboard.writeText(shareLink).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    }).catch(err => {
+      // If the clipboard API fails (e.g., due to iframe permissions), use the fallback
+      console.warn("Clipboard API failed, using fallback.", err);
+      fallbackCopyTextToClipboard(shareLink);
     });
   };
 
   return (
     <div className="fixed inset-0 z-[100] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-6 animate-in fade-in">
-      <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 text-center">
+      <div className="bg-white w-full max-w-sm rounded-3xl shadow-2xl p-6 text-center overflow-hidden">
          <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4"><Share2 size={32} /></div>
          <h2 className="text-xl font-bold mb-2">Share this Trip</h2>
-         <p className="text-sm text-slate-500 mb-6">Give this code to friends so they can join, view, and edit the itinerary.</p>
-         <div className="bg-slate-100 p-4 rounded-xl flex items-center justify-between mb-6 border border-slate-200">
-            <code className="font-mono text-slate-800 font-bold tracking-wider">{trip.id}</code>
-            <button onClick={handleCopy} className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors uppercase tracking-wider">{copied ? 'Copied!' : 'Copy'}</button>
+         <p className="text-sm text-slate-500 mb-6">Send this link to friends so they can automatically join and collaborate on the itinerary.</p>
+         <div className="bg-slate-100 p-3 rounded-xl flex items-center justify-between mb-6 border border-slate-200 gap-2">
+            <div className="overflow-x-auto whitespace-nowrap scrollbar-hide flex-1 text-left">
+              <code className="font-mono text-slate-700 text-xs select-all">{shareLink}</code>
+            </div>
+            <button onClick={handleCopy} className="text-xs font-bold text-blue-600 hover:text-blue-800 transition-colors uppercase tracking-wider shrink-0 bg-slate-100 pl-3 border-l border-slate-200">{copied ? 'Copied!' : 'Copy'}</button>
          </div>
          <button onClick={onClose} className="w-full bg-slate-800 text-white font-bold py-3 rounded-xl hover:bg-slate-900 transition-colors">Done</button>
       </div>
